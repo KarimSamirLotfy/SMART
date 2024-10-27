@@ -102,7 +102,7 @@ class AttentionLayer(MessagePassing):
         q = self.to_q(x_dst).view(-1, self.num_heads, self.head_dim)
         k = self.to_k(x_src).view(-1, self.num_heads, self.head_dim)
         v = self.to_v(x_src).view(-1, self.num_heads, self.head_dim)
-        agg = self.propagate(edge_index=edge_index, x_dst=x_dst, q=q, k=k, v=v, r=r)
+        agg = self.propagate(edge_index=edge_index, x_dst=x_dst, q=q, k=k, v=v, r=r) # This is the message passgin to the specifc edges. it also does Attention
         return self.to_out(agg)
 
     def _ff_block(self, x: torch.Tensor) -> torch.Tensor:

@@ -128,7 +128,7 @@ class SMARTAgentDecoder(nn.Module):
         motion_vector_a = torch.cat([pos_a.new_zeros(data['agent']['num_nodes'], 1, self.input_dim),
                                      pos_a[:, 1:] - pos_a[:, :-1]], dim=1)
 
-        agent_type = data['agent']['type']
+        agent_type = data['agent']['type'] # (num_agents)
         veh_mask = (agent_type == 0)
         cyc_mask = (agent_type == 2)
         ped_mask = (agent_type == 1)
@@ -294,10 +294,11 @@ class SMARTAgentDecoder(nn.Module):
         num_agent, num_step, traj_dim = pos_a.shape
         agent_category = data['agent']['category']
         agent_token_index = data['agent']['token_idx']
+        # agent_token_traj.shape = (num_agent, num_step, len(agent_tokens)==2048, timesteps_per_token(4), x,y(2)) so for each agent, for each timestep==18, for each movement acnhor token, 4 steps, 2
         feat_a, agent_token_traj = self.agent_token_embedding(data, agent_category, agent_token_index,
                                                               pos_a, head_vector_a)
 
-        agent_valid_mask = data['agent']['agent_valid_mask'].clone()
+        agent_valid_mask = data['agent']['agent_valid_mask'].clone() # (num_agents, num_steps)
         # eval_mask = data['agent']['valid_mask'][:, self.num_historical_steps - 1]
         # agent_valid_mask[~eval_mask] = False
         mask = agent_valid_mask
@@ -313,7 +314,6 @@ class SMARTAgentDecoder(nn.Module):
                                    device=pos_a.device).repeat_interleave(data['agent']['num_nodes'])
             batch_pl = torch.arange(num_step,
                                     device=pos_a.device).repeat_interleave(data['pt_token']['num_nodes'])
-
         mask_s = mask.transpose(0, 1).reshape(-1)
         edge_index_a2a, r_a2a = self.build_interaction_edge(pos_a, head_a, head_vector_a, batch_s, mask_s)
         mask[agent_category != 3] = False
@@ -321,19 +321,19 @@ class SMARTAgentDecoder(nn.Module):
                                                             head_vector_a, mask, batch_s, batch_pl)
 
         for i in range(self.num_layers):
-            feat_a = feat_a.reshape(-1, self.hidden_dim)
-            feat_a = self.t_attn_layers[i](feat_a, r_t, edge_index_t)
+            feat_a = feat_a.reshape(-1, self.hidden_dim) # from (num_agents, num_timesteps, hidden_dim) to (num_agents*num_timesteps, hidden_dim)
+            feat_a = self.t_attn_layers[i](feat_a, r_t, edge_index_t) # Do attention on the temporal edges
             feat_a = feat_a.reshape(-1, num_step,
                                     self.hidden_dim).transpose(0, 1).reshape(-1, self.hidden_dim)
             feat_a = self.pt2a_attn_layers[i]((map_enc['x_pt'].repeat_interleave(
                 repeats=num_step, dim=0).reshape(-1, num_step, self.hidden_dim).transpose(0, 1).reshape(
-                    -1, self.hidden_dim), feat_a), r_pl2a, edge_index_pl2a)
-            feat_a = self.a2a_attn_layers[i](feat_a, r_a2a, edge_index_a2a)
+                    -1, self.hidden_dim), feat_a), r_pl2a, edge_index_pl2a) # Do attention on the map to agent edges
+            feat_a = self.a2a_attn_layers[i](feat_a, r_a2a, edge_index_a2a) # Do attention on the agent to agent edges
             feat_a = feat_a.reshape(num_step, -1, self.hidden_dim).transpose(0, 1)
 
         num_agent, num_step, hidden_dim, traj_num, traj_dim = agent_token_traj.shape
-        next_token_prob = self.token_predict_head(feat_a)
-        next_token_prob_softmax = torch.softmax(next_token_prob, dim=-1)
+        next_token_prob = self.token_predict_head(feat_a) # This features now has the information of the agent to the agent, to the map the the other agents. 
+        next_token_prob_softmax = torch.softmax(next_token_prob, dim=-1) # (num_agents, num_steps, token_size==2048)
         _, next_token_idx = torch.topk(next_token_prob_softmax, k=10, dim=-1)
 
         next_token_index_gt = agent_token_index.roll(shifts=-1, dims=1)

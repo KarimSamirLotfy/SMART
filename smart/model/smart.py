@@ -141,7 +141,7 @@ class SMART(pl.LightningModule):
                       data,
                       batch_idx):
         data = self.match_token_map(data)
-        data = self.sample_pt_pred(data)
+        data = self.sample_pt_pred(data) # HEre some sampling happens. 
         if isinstance(data, Batch):
             data['agent']['av_index'] += data['agent']['ptr'][:-1]
         pred = self(data)
@@ -255,22 +255,25 @@ class SMART(pl.LightningModule):
         return it, epoch
 
     def match_token_map(self, data):
-        traj_pos = data['map_save']['traj_pos'].to(torch.float)
-        traj_theta = data['map_save']['traj_theta'].to(torch.float)
-        pl_idx_list = data['map_save']['pl_idx_list']
-        token_sample_pt = self.map_token['sample_pt'].to(traj_pos.device)
-        token_src = self.map_token['traj_src'].to(traj_pos.device)
-        max_traj_len = self.map_token['traj_src'].shape[1]
+        traj_pos = data['map_save']['traj_pos'].to(torch.float) # (pl_num, traj_len, 2)
+        traj_theta = data['map_save']['traj_theta'].to(torch.float) # pl_num
+        pl_idx_list = data['map_save']['pl_idx_list'] # pl_num
+        token_sample_pt = self.map_token['sample_pt'].to(traj_pos.device) # 1024, 3, 2
+        token_src = self.map_token['traj_src'].to(traj_pos.device) # 1024, 11, 2
+        max_traj_len = self.map_token['traj_src'].shape[1] # 11
         pl_num = traj_pos.shape[0]
 
         pt_token_pos = traj_pos[:, 0, :].clone()
         pt_token_orientation = traj_theta.clone()
         cos, sin = traj_theta.cos(), traj_theta.sin()
-        rot_mat = traj_theta.new_zeros(pl_num, 2, 2)
+        rot_mat = traj_theta.new_zeros(pl_num, 2, 2) # pl_num, 2, 2 Rotation matrix for each polyline
         rot_mat[..., 0, 0] = cos
         rot_mat[..., 0, 1] = -sin
         rot_mat[..., 1, 0] = sin
         rot_mat[..., 1, 1] = cos
+        # Subtract the first point of the polyline from all points of the polyline
+        # to get relative position of each point in the polyline
+        # bacth multply each relative position by the rotation matrix to get the relative position in the local coordinate system
         traj_pos_local = torch.bmm((traj_pos - traj_pos[:, 0:1]), rot_mat.view(-1, 2, 2))
         distance = torch.sum((token_sample_pt[None] - traj_pos_local.unsqueeze(1))**2, dim=(-2, -1))
         pt_token_id = torch.argmin(distance, dim=1)
@@ -305,7 +308,7 @@ class SMART(pl.LightningModule):
         idx_matrix = torch.arange(traj_mask.size(2)).unsqueeze(0).unsqueeze(0)
         idx_matrix = idx_matrix.expand(traj_mask.size(0), traj_mask.size(1), -1)  #
         counts_num_expanded = count_nums.unsqueeze(-1)
-        mask_update = idx_matrix < counts_num_expanded
+        mask_update = idx_matrix < counts_num_expanded # 291, 3, num_polylines
         traj_mask[mask_update] = True
 
         data['pt_token']['traj_mask'] = traj_mask
@@ -319,10 +322,10 @@ class SMART(pl.LightningModule):
         return data
 
     def sample_pt_pred(self, data):
-        traj_mask = data['pt_token']['traj_mask']
-        raw_pt_index = torch.arange(1, traj_mask.shape[2]).repeat(traj_mask.shape[0], traj_mask.shape[1], 1)
+        traj_mask = data['pt_token']['traj_mask'] # 291, 3, 35
+        raw_pt_index = torch.arange(1, traj_mask.shape[2]).repeat(traj_mask.shape[0], traj_mask.shape[1], 1) # 293, 3, 34
         masked_pt_index = raw_pt_index.view(-1)[torch.randperm(raw_pt_index.numel())[:traj_mask.shape[0]*traj_mask.shape[1]*((traj_mask.shape[2]-1)//3)].reshape(traj_mask.shape[0], traj_mask.shape[1], (traj_mask.shape[2]-1)//3)]
-        masked_pt_index = torch.sort(masked_pt_index, -1)[0]
+        masked_pt_index = torch.sort(masked_pt_index, -1)[0] # 291, 3, 11
         pt_valid_mask = traj_mask.clone()
         pt_valid_mask.scatter_(2, masked_pt_index, False)
         pt_pred_mask = traj_mask.clone()
