@@ -233,7 +233,7 @@ class SMARTAgentDecoder(nn.Module):
         else:
             mask_t = hist_mask.unsqueeze(2) & hist_mask.unsqueeze(1)
 
-        edge_index_t = dense_to_sparse(mask_t)[0]
+        edge_index_t = dense_to_sparse(mask_t)[0] # this is the index of where the edges are
         edge_index_t = edge_index_t[:, edge_index_t[1] > edge_index_t[0]]
         edge_index_t = edge_index_t[:, edge_index_t[1] - edge_index_t[0] <= self.time_span / self.shift]
         rel_pos_t = pos_t[edge_index_t[0]] - pos_t[edge_index_t[1]]
@@ -288,13 +288,14 @@ class SMARTAgentDecoder(nn.Module):
     def forward(self,
                 data: HeteroData,
                 map_enc: Mapping[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        pos_a = data['agent']['token_pos']
-        head_a = data['agent']['token_heading']
-        head_vector_a = torch.stack([head_a.cos(), head_a.sin()], dim=-1)
+        pos_a = data['agent']['token_pos'] # num_agents, num_steps, 2
+        head_a = data['agent']['token_heading'] # num_agents, num_steps
+        head_vector_a = torch.stack([head_a.cos(), head_a.sin()], dim=-1) # num_agents, num_steps, 2
         num_agent, num_step, traj_dim = pos_a.shape
         agent_category = data['agent']['category']
         agent_token_index = data['agent']['token_idx']
         # agent_token_traj.shape = (num_agent, num_step, len(agent_tokens)==2048, timesteps_per_token(4), x,y(2)) so for each agent, for each timestep==18, for each movement acnhor token, 4 steps, 2
+        # feat_a.shape = (num_agents, num_steps, hidden_dim)
         feat_a, agent_token_traj = self.agent_token_embedding(data, agent_category, agent_token_index,
                                                               pos_a, head_vector_a)
 
@@ -304,7 +305,7 @@ class SMARTAgentDecoder(nn.Module):
         mask = agent_valid_mask
         edge_index_t, r_t = self.build_temporal_edge(pos_a, head_a, head_vector_a, num_agent, mask)
 
-        if isinstance(data, Batch):
+        if isinstance(data, Batch): # Batching here happens by creating a graph where agents and things not in the same batch do not cominicate. 
             batch_s = torch.cat([data['agent']['batch'] + data.num_graphs * t
                                  for t in range(num_step)], dim=0)
             batch_pl = torch.cat([data['pt_token']['batch'] + data.num_graphs * t
@@ -325,9 +326,11 @@ class SMARTAgentDecoder(nn.Module):
             feat_a = self.t_attn_layers[i](feat_a, r_t, edge_index_t) # Do attention on the temporal edges
             feat_a = feat_a.reshape(-1, num_step,
                                     self.hidden_dim).transpose(0, 1).reshape(-1, self.hidden_dim)
-            feat_a = self.pt2a_attn_layers[i]((map_enc['x_pt'].repeat_interleave(
-                repeats=num_step, dim=0).reshape(-1, num_step, self.hidden_dim).transpose(0, 1).reshape(
-                    -1, self.hidden_dim), feat_a), r_pl2a, edge_index_pl2a) # Do attention on the map to agent edges
+            feat_a = self.pt2a_attn_layers[i](
+                (map_enc['x_pt'].repeat_interleave(
+                    repeats=num_step, dim=0)
+                        .reshape(-1, num_step, self.hidden_dim).transpose(0, 1).reshape(-1, self.hidden_dim), 
+                feat_a), r_pl2a, edge_index_pl2a) # Do attention on the map to agent edges
             feat_a = self.a2a_attn_layers[i](feat_a, r_a2a, edge_index_a2a) # Do attention on the agent to agent edges
             feat_a = feat_a.reshape(num_step, -1, self.hidden_dim).transpose(0, 1)
 
@@ -385,7 +388,7 @@ class SMARTAgentDecoder(nn.Module):
         next_token_idx_list = []
         mask = agent_valid_mask.clone()
         feat_a_t_dict = {}
-        for t in range(self.num_recurrent_steps_val // self.shift):
+        for t in range(self.num_recurrent_steps_val // self.shift): # Autoregressive prediction
             if t == 0:
                 inference_mask = mask.clone()
                 inference_mask[:, (self.num_historical_steps - 1) // self.shift + t:] = False

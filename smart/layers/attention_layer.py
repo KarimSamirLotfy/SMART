@@ -60,7 +60,7 @@ class AttentionLayer(MessagePassing):
                 edge_index: torch.Tensor) -> torch.Tensor:
         if isinstance(x, torch.Tensor):
             x_src = x_dst = self.attn_prenorm_x_src(x)
-        else:
+        else: # When given a tuple then xsrc and xdst are different
             x_src, x_dst = x
             x_src = self.attn_prenorm_x_src(x_src)
             x_dst = self.attn_prenorm_x_dst(x_dst)
@@ -99,7 +99,7 @@ class AttentionLayer(MessagePassing):
                     x_dst: torch.Tensor,
                     r: Optional[torch.Tensor],
                     edge_index: torch.Tensor) -> torch.Tensor:
-        q = self.to_q(x_dst).view(-1, self.num_heads, self.head_dim)
+        q = self.to_q(x_dst).view(-1, self.num_heads, self.head_dim) # 288m 128
         k = self.to_k(x_src).view(-1, self.num_heads, self.head_dim)
         v = self.to_v(x_src).view(-1, self.num_heads, self.head_dim)
         agg = self.propagate(edge_index=edge_index, x_dst=x_dst, q=q, k=k, v=v, r=r) # This is the message passgin to the specifc edges. it also does Attention

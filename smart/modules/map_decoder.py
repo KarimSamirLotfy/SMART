@@ -74,17 +74,17 @@ class SMARTMapDecoder(nn.Module):
         return torch.cuda.amp.autocast(dtype=dtype)
 
     def forward(self, data: HeteroData) -> Dict[str, torch.Tensor]:
-        pt_valid_mask = data['pt_token']['pt_valid_mask']
-        pt_pred_mask = data['pt_token']['pt_pred_mask']
-        pt_target_mask = data['pt_token']['pt_target_mask']
+        pt_valid_mask = data['pt_token']['pt_valid_mask'] # pl_num
+        pt_pred_mask = data['pt_token']['pt_pred_mask'] # pl_num
+        pt_target_mask = data['pt_token']['pt_target_mask'] # pl_num
         mask_s = pt_valid_mask
 
-        pos_pt = data['pt_token']['position'][:, :self.input_dim].contiguous()
-        orient_pt = data['pt_token']['orientation'].contiguous()
-        orient_vector_pt = torch.stack([orient_pt.cos(), orient_pt.sin()], dim=-1)
-        token_sample_pt = self.map_token['traj_src'].to(pos_pt.device).to(torch.float)
-        pt_token_emb_src = self.token_emb(token_sample_pt.view(token_sample_pt.shape[0], -1))
-        pt_token_emb = pt_token_emb_src[data['pt_token']['token_idx']]
+        pos_pt = data['pt_token']['position'][:, :self.input_dim].contiguous() # pl_num , 2
+        orient_pt = data['pt_token']['orientation'].contiguous() # pl_num
+        orient_vector_pt = torch.stack([orient_pt.cos(), orient_pt.sin()], dim=-1) # pl_num, 2
+        token_sample_pt = self.map_token['traj_src'].to(pos_pt.device).to(torch.float) # token_num, 11, 2
+        pt_token_emb_src = self.token_emb(token_sample_pt.view(token_sample_pt.shape[0], -1)) # Maps tokens of shape token_num, 22 to token_num, hidden_dim
+        pt_token_emb = pt_token_emb_src[data['pt_token']['token_idx']] # Takes the token embeddings of the tokens that are present in the map
 
         if self.input_dim == 2:
             x_pt = pt_token_emb
@@ -98,20 +98,20 @@ class SMARTMapDecoder(nn.Module):
         x_pt_categorical_embs = [self.type_pt_emb(data['pt_token']['type'].long()),
                                  self.polygon_type_emb(data['pt_token']['pl_type'].long()),
                                  self.light_pl_emb(token_light_type.long()),]
-        x_pt = x_pt + torch.stack(x_pt_categorical_embs).sum(dim=0)
+        x_pt = x_pt + torch.stack(x_pt_categorical_embs).sum(dim=0) # Adds the embeddings of the type, polygon type and light type to the token embeddings
         edge_index_pt2pt = radius_graph(x=pos_pt[:, :2], r=self.pl2pl_radius,
                                         batch=data['pt_token']['batch'] if isinstance(data, Batch) else None,
                                         loop=False, max_num_neighbors=100)
         if self.mask_pt:
             edge_index_pt2pt = subgraph(subset=mask_s, edge_index=edge_index_pt2pt)[0]
-        rel_pos_pt2pt = pos_pt[edge_index_pt2pt[0]] - pos_pt[edge_index_pt2pt[1]]
+        rel_pos_pt2pt = pos_pt[edge_index_pt2pt[0]] - pos_pt[edge_index_pt2pt[1]] # Relative positions between connected nodes aka nodes that are close to each other
         rel_orient_pt2pt = wrap_angle(orient_pt[edge_index_pt2pt[0]] - orient_pt[edge_index_pt2pt[1]])
         if self.input_dim == 2:
             r_pt2pt = torch.stack(
                 [torch.norm(rel_pos_pt2pt[:, :2], p=2, dim=-1),
                  angle_between_2d_vectors(ctr_vector=orient_vector_pt[edge_index_pt2pt[1]],
                                           nbr_vector=rel_pos_pt2pt[:, :2]),
-                 rel_orient_pt2pt], dim=-1)
+                 rel_orient_pt2pt], dim=-1) # Computes the relative distance, angle and orientation between connected nodes
         elif self.input_dim == 3:
             r_pt2pt = torch.stack(
                 [torch.norm(rel_pos_pt2pt[:, :2], p=2, dim=-1),
@@ -121,13 +121,13 @@ class SMARTMapDecoder(nn.Module):
                  rel_orient_pt2pt], dim=-1)
         else:
             raise ValueError('{} is not a valid dimension'.format(self.input_dim))
-        r_pt2pt = self.r_pt2pt_emb(continuous_inputs=r_pt2pt, categorical_embs=None)
+        r_pt2pt = self.r_pt2pt_emb(continuous_inputs=r_pt2pt, categorical_embs=None) # Embbedding module that can handdle continous and discreet embeddings. 
         for i in range(self.num_layers):
-            x_pt = self.pt2pt_layers[i](x_pt, r_pt2pt, edge_index_pt2pt)
+            x_pt = self.pt2pt_layers[i](x_pt, r_pt2pt, edge_index_pt2pt) # 
 
-        next_token_prob = self.token_predict_head(x_pt[pt_pred_mask])
-        next_token_prob_softmax = torch.softmax(next_token_prob, dim=-1)
-        _, next_token_idx = torch.topk(next_token_prob_softmax, k=10, dim=-1)
+        next_token_prob = self.token_predict_head(x_pt[pt_pred_mask]) # Predicts the next token for the tokens that are present in the map. remeber a token is 1024
+        next_token_prob_softmax = torch.softmax(next_token_prob, dim=-1) # valid(pl_num), 1024 aka token size.
+        _, next_token_idx = torch.topk(next_token_prob_softmax, k=10, dim=-1) # Returns the top 10 tokens with the highest probability
         next_token_index_gt = data['pt_token']['token_idx'][pt_target_mask]
 
         return {

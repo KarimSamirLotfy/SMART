@@ -15,7 +15,7 @@ import pickle
 from collections import defaultdict
 import os
 from waymo_open_dataset.protos import sim_agents_submission_pb2
-
+from smart.utils.visualise import draw_gif
 
 def cal_polygon_contour(x, y, theta, width, length):
     left_front_x = x + 0.5 * length * math.cos(theta) - 0.5 * width * math.sin(theta)
@@ -100,7 +100,9 @@ class SMART(pl.LightningModule):
         self.test_predictions = dict()
         self.cls_loss = nn.CrossEntropyLoss(label_smoothing=0.1)
         self.map_cls_loss = nn.CrossEntropyLoss(label_smoothing=0.1)
-        self.inference_token = False
+        self.inference_token = True
+        self.visualize = True
+        self.visualize_directory = 'visualize'
         self.rollout_num = 1
 
     def get_trajectory_token(self):
@@ -173,29 +175,84 @@ class SMART(pl.LightningModule):
         self.log('val_cls_acc', self.TokenCls, prog_bar=True, on_step=False, on_epoch=True, batch_size=1, sync_dist=True)
         self.log('val_loss', loss, prog_bar=True, on_step=False, on_epoch=True, batch_size=1, sync_dist=True)
 
-        eval_mask = data['agent']['valid_mask'][:, self.num_historical_steps-1]  # * (data['agent']['category'] == 3)
+        eval_mask = data['agent']['valid_mask'][:, self.num_historical_steps-1]  # * (data['agent']['category'] == 3) # These are the valid masks. where the agent is valid.
         if self.inference_token:
             pred = self.inference(data)
             pos_a = pred['pos_a']
             gt = pred['gt']
             valid_mask = data['agent']['valid_mask'][:, self.num_historical_steps:]
             pred_traj = pred['pred_traj']
-            # next_token_idx = pred['next_token_idx'][..., None]
-            # next_token_idx_gt = pred['next_token_idx_gt'][:, 2:]
-            # next_token_eval_mask = pred['next_token_eval_mask'][:, 2:]
-            # next_token_eval_mask[:, 1:] = False
-            # self.TokenCls.update(pred=next_token_idx[next_token_eval_mask], target=next_token_idx_gt[next_token_eval_mask],
-            #                      valid_mask=next_token_eval_mask[next_token_eval_mask])
-            # self.log('val_inference_cls_acc', self.TokenCls, prog_bar=True, on_step=False, on_epoch=True, batch_size=1, sync_dist=True)
+            pred_head = pred['pred_head']
+            next_token_idx = pred['next_token_idx'][..., None]
+            next_token_idx_gt = pred['next_token_idx_gt'][:, 2:]
+            next_token_eval_mask = pred['next_token_eval_mask'][:, 2:]
+            next_token_eval_mask[:, 1:] = False
+            self.TokenCls.update(pred=next_token_idx[next_token_eval_mask], target=next_token_idx_gt[next_token_eval_mask],
+                                 valid_mask=next_token_eval_mask[next_token_eval_mask])
+            self.log('val_inference_cls_acc', self.TokenCls, prog_bar=True, on_step=False, on_epoch=True, batch_size=1, sync_dist=True)
             eval_mask = data['agent']['valid_mask'][:, self.num_historical_steps-1]
 
             self.minADE.update(pred=pred_traj[eval_mask], target=gt[eval_mask], valid_mask=valid_mask[eval_mask])
             self.minFDE.update(pred=pred_traj[eval_mask], target=gt[eval_mask], valid_mask=valid_mask[eval_mask])
-            # print('ade: ', self.minADE.compute(), 'fde: ', self.minFDE.compute())
 
             self.log('val_minADE', self.minADE, prog_bar=True, on_step=False, on_epoch=True, batch_size=1)
             self.log('val_minFDE', self.minFDE, prog_bar=True, on_step=False, on_epoch=True, batch_size=1)
 
+        if self.visualize:
+            # Historical states
+            historical_states = data['agent']['position'][:, :self.num_historical_steps]
+            historical_states = historical_states[eval_mask]
+
+            # predicted states
+            # aggeregate predicted trajectories and predicted heading
+            pred_traj = pred_traj[eval_mask]
+            pred_head = pred_head[eval_mask]
+            predicted_states =  torch.cat([pred_traj, pred_head.unsqueeze(-1)], dim=-1)
+
+            # entire predicted scenario
+            predicted_scenario_states = torch.cat([historical_states, predicted_states], dim=1)
+
+            # get the scenario itself
+            scenario_id = data['scenario_id'][0]
+            dir_raw = '/home/k.lotfy/SMART/data/valid_demo'
+            data_raw = pickle.load(open(f'{dir_raw}/{scenario_id}.pkl', 'rb'))
+
+            map_points = data_raw['map_point']['position']
+            map_points_types = data_raw['map_point']['type']
+            # remove all points that are not of type 16
+            map_points = map_points[map_points_types == 16]
+ 
+
+            ### DRAW PREDCITED TRAJECTORY ###
+            draw_gif(
+                predicted_num=predicted_scenario_states.shape[0],
+                traj=predicted_scenario_states[:, :, :2].cpu().numpy(),
+                real_yaw=predicted_scenario_states[:, :, 2].cpu().numpy(),
+                data_dict={'curr_loc': historical_states[0].cpu().numpy(), 'predicted_feature': gt.cpu().numpy()},
+                map=map_points,
+                image_path=f'{self.visualize_dir_path()}/{self.current_epoch}_{batch_idx}_pred.gif',
+            )
+
+            ### DRAW GT TRAJECTORY ###
+            gt_position = data['agent']['position']
+            gt_position = gt_position[eval_mask]
+
+            gt_heading = data['agent']['heading']
+            gt_heading = gt_heading[eval_mask]
+
+            draw_gif(
+                predicted_num=gt_position.shape[0],
+                traj=gt_position.cpu().numpy(),
+                real_yaw=gt_heading.cpu().numpy(),
+                data_dict={'curr_loc': historical_states[0].cpu().numpy(), 'predicted_feature': gt.cpu().numpy()},
+                map=map_points,
+                image_path=f'{self.visualize_dir_path()}/{self.current_epoch}_{batch_idx}gt.gif',
+            )
+
+        
+
+
+        
     def on_validation_start(self):
         self.gt = []
         self.pred = []
@@ -342,3 +399,12 @@ class SMART(pl.LightningModule):
         data['pt_token']['pt_target_mask'] = pt_target_mask[traj_mask]
 
         return data
+
+
+    def visualize_dir_path(self):
+        log_dir = self.logger.log_dir
+        visualize_dir = os.path.join(log_dir, 'visualize')
+        os.makedirs(visualize_dir, exist_ok=True)
+        return visualize_dir
+            
+            

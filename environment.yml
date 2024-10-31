@@ -1,11 +1,11 @@
 name: smart
 channels:
   - pytorch
-  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free
-  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main
-  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/
-  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/pytorch/
-  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/
+  # - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free
+  # - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main
+  # - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/
+  # - https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/pytorch/
+  # - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/
   - defaults
 dependencies:
   - _libgcc_mutex=0.1=main
@@ -32,7 +32,7 @@ dependencies:
   - libffi=3.4.4=h6a678d5_1
   - libgcc-ng=11.2.0=h1234567_1
   - libgomp=11.2.0=h1234567_1
-  - libiconv=1.14=0
+  # - libiconv=1.14=0
   - libidn2=2.3.4=h5eee18b_0
   - libpng=1.6.39=h5eee18b_0
   - libstdcxx-ng=11.2.0=h1234567_1

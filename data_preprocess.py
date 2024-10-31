@@ -686,6 +686,8 @@ def wm2argo(file, dir_name, output_dir):
         data['city'] = new_agents_array['city'].values[0]
         data['agent'] = get_agent_features(new_agents_array, av_id, num_historical_steps=11)
         data.update(map_data)
+        # make sure the output directory exists
+        os.makedirs(output_dir, exist_ok=True)
         with open(os.path.join(output_dir, scenario_id + '.pkl'), "wb+") as f:
             pickle.dump(data, f)
 
