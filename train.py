@@ -32,9 +32,10 @@ if __name__ == '__main__':
         model.load_params_from_file(filename=args.pretrain_ckpt,
                                     logger=logger)
     trainer_config = config.Trainer
-    model_checkpoint = ModelCheckpoint(dirpath=args.save_ckpt_path,
+    model_checkpoint = ModelCheckpoint(
+        # dirpath=args.save_ckpt_path,
                                        filename="{epoch:02d}",
-                                       monitor='val_cls_acc',
+                                       monitor='val/cls_acc',
                                        every_n_epochs=1,
                                        save_top_k=5,
                                        mode='max')
@@ -46,7 +47,9 @@ if __name__ == '__main__':
                          callbacks=[model_checkpoint, lr_monitor],
                          max_epochs=trainer_config.max_epochs,
                          num_sanity_val_steps=0,
-                         gradient_clip_val=0.5)
+                         gradient_clip_val=0.5,
+                         overfit_batches=trainer_config.overfit_batches,
+                         limit_val_batches=trainer_config.limit_val_batches,)
     if args.ckpt_path == "":
         trainer.fit(model,
                     datamodule)

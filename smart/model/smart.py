@@ -1,5 +1,6 @@
 import contextlib
 import pytorch_lightning as pl
+from smart.metrics.waymo_metrics import WaymoMetrics
 import torch
 import torch.nn as nn
 from torch_geometric.data import Batch
@@ -101,6 +102,7 @@ class SMART(pl.LightningModule):
         self.minADE = minADE(max_guesses=1)
         self.minFDE = minFDE(max_guesses=1)
         self.TokenCls = TokenCls(max_guesses=1)
+        self.waymo_metrics = WaymoMetrics()
 
         self.test_predictions = dict()
         self.cls_loss = nn.CrossEntropyLoss(label_smoothing=0.1)
@@ -178,8 +180,8 @@ class SMART(pl.LightningModule):
         loss = cls_loss
         self.TokenCls.update(pred=next_token_idx[next_token_eval_mask], target=next_token_idx_gt[next_token_eval_mask],
                         valid_mask=next_token_eval_mask[next_token_eval_mask])
-        self.log('val_cls_acc', self.TokenCls, prog_bar=True, on_step=False, on_epoch=True, batch_size=1, sync_dist=True)
-        self.log('val_loss', loss, prog_bar=True, on_step=False, on_epoch=True, batch_size=1, sync_dist=True)
+        self.log('val/cls_acc', self.TokenCls, prog_bar=True, on_step=False, on_epoch=True, batch_size=1, sync_dist=True)
+        self.log('val/loss', loss, prog_bar=True, on_step=False, on_epoch=True, batch_size=1, sync_dist=True)
 
         eval_mask = data['agent']['valid_mask'][:, self.num_historical_steps-1]  # * (data['agent']['category'] == 3) # These are the valid masks. where the agent is valid.
         if self.inference_token:
@@ -201,112 +203,122 @@ class SMART(pl.LightningModule):
             self.minADE.update(pred=pred_traj[eval_mask], target=gt[eval_mask], valid_mask=valid_mask[eval_mask])
             self.minFDE.update(pred=pred_traj[eval_mask], target=gt[eval_mask], valid_mask=valid_mask[eval_mask])
 
-            self.log('val_minADE', self.minADE, prog_bar=True, on_step=False, on_epoch=True, batch_size=1)
-            self.log('val_minFDE', self.minFDE, prog_bar=True, on_step=False, on_epoch=True, batch_size=1)
+            self.log('val/minADE', self.minADE, prog_bar=True, on_step=False, on_epoch=True, batch_size=1)
+            self.log('val/minFDE', self.minFDE, prog_bar=True, on_step=False, on_epoch=True, batch_size=1)
 
-        if self.visualize:
-            # Historical states
-            historical_states_position = data['agent']['position'][:, :self.num_historical_steps] # (num_agents, num_historical_steps, 3(x, y, z))
-            historical_states_position = historical_states_position[eval_mask]
-            historical_states_heading = data['agent']['heading'][:, :self.num_historical_steps] # (num_agents, num_historical_steps)
-            historical_states_heading = historical_states_heading[eval_mask]
-            historical_states = torch.cat([historical_states_position[:, :, 0:2], historical_states_heading.unsqueeze(-1)], dim=-1) # (num_agents, num_historical_steps, 3(x, y, theta))
-            # predicted states
-            # aggeregate predicted trajectories and predicted heading
-            pred_traj = pred_traj[eval_mask]
-            pred_head = pred_head[eval_mask]
-            predicted_states =  torch.cat([pred_traj, pred_head.unsqueeze(-1)], dim=-1) # (num_agents, num_future_steps, 3(x, y, theta))
+        ### VISUALIZATION AND METRICS ###
+        # This is done on individual samples not batches. 
+        batch_association = data['agent']['batch'] # list of elements where each element indicates what batch this agent belongs to.
+        for sample_indx, element_indx in enumerate(torch.unique(batch_association)):
+            all_valid_agents = data['agent']['valid_mask'][:, self.num_historical_steps-1] # (num_agents)
+            eval_mask = all_valid_agents * (batch_association == element_indx)
 
-            # entire predicted scenario
-            predicted_scenario_states = torch.cat([historical_states, predicted_states], dim=1)
+            if self.visualize:
+                # Historical states
+                historical_states_position = data['agent']['position'][:, :self.num_historical_steps] # (num_agents, num_historical_steps, 3(x, y, z))
+                historical_states_position = historical_states_position[eval_mask]
+                historical_states_heading = data['agent']['heading'][:, :self.num_historical_steps] # (num_agents, num_historical_steps)
+                historical_states_heading = historical_states_heading[eval_mask]
+                historical_states = torch.cat([historical_states_position[:, :, 0:2], historical_states_heading.unsqueeze(-1)], dim=-1) # (num_agents, num_historical_steps, 3(x, y, theta))
+                # predicted states
+                # aggeregate predicted trajectories and predicted heading
+                single_pred_traj = pred_traj[eval_mask]
+                single_pred_head = pred_head[eval_mask]
+                predicted_states =  torch.cat([single_pred_traj, single_pred_head.unsqueeze(-1)], dim=-1) # (num_agents, num_future_steps, 3(x, y, theta))
 
-            # get the scenario itself, for visualization and metrics
-            data_raw = data['scenario_raw'][0]
-            scenario = scenario_pb2.Scenario()
-            scenario.ParseFromString(bytearray(data_raw.numpy())) 
+                # entire predicted scenario
+                predicted_scenario_states = torch.cat([historical_states, predicted_states], dim=1)
 
-            ### DRAW PREDCITED TRAJECTORY ###
-            draw_gif(
-                predicted_num=predicted_scenario_states.shape[0],
-                traj=predicted_scenario_states[:, :, :2].cpu().numpy(),
-                real_yaw=predicted_scenario_states[:, :, 2].cpu().numpy(),
-                scenario=scenario,
-                image_path=f'{self.visualize_dir_path()}/{self.current_epoch}_{batch_idx}_pred.gif',
-            )
+                # get the scenario itself, for visualization and metrics
+                data_raw = data['scenario_raw'][element_indx]
+                scenario = scenario_pb2.Scenario()
+                scenario.ParseFromString(bytearray(data_raw.numpy())) 
 
-            ### DRAW GT TRAJECTORY ###
-            gt_position = data['agent']['position']
-            gt_position = gt_position[eval_mask]
+                ### DRAW PREDCITED TRAJECTORY ###
+                draw_gif(
+                    predicted_num=predicted_scenario_states.shape[0],
+                    traj=predicted_scenario_states[:, :, :2].cpu().numpy(),
+                    real_yaw=predicted_scenario_states[:, :, 2].cpu().numpy(),
+                    scenario=scenario,
+                    image_path=f'{self.visualize_dir_path()}/{self.current_epoch}_{batch_idx}_{sample_indx}_pred.gif',
+                )
 
-            gt_heading = data['agent']['heading']
-            gt_heading = gt_heading[eval_mask]
+                ### DRAW GT TRAJECTORY ###
+                gt_position = data['agent']['position']
+                gt_position = gt_position[eval_mask]
 
-            draw_gif(
-                predicted_num=gt_position.shape[0],
-                traj=gt_position.cpu().numpy(),
-                real_yaw=gt_heading.cpu().numpy(),
-                scenario=scenario,
-                image_path=f'{self.visualize_dir_path()}/{self.current_epoch}_{batch_idx}gt.gif',
-            )
+                gt_heading = data['agent']['heading']
+                gt_heading = gt_heading[eval_mask]
 
-            ### DRAW SCENARIO ###
-            draw_gif_from_scenario(
-                predicted_num=gt.shape[0],
-                scenario=scenario, 
-                submission_specs=submission_specs,
-                image_path = f'{self.visualize_dir_path()}/{self.current_epoch}_{batch_idx}_scenario.gif',
-            )
+                draw_gif(
+                    predicted_num=gt_position.shape[0],
+                    traj=gt_position.cpu().numpy(),
+                    real_yaw=gt_heading.cpu().numpy(),
+                    scenario=scenario,
+                    image_path=f'{self.visualize_dir_path()}/{self.current_epoch}_{batch_idx}_{sample_indx}_gt.gif',
+                )
 
-        if self.metrics:
-            ### GROUND TRUTH SCENARIO ###
-            # Get all the trajectories fom the scenairo
-            all_logged_trajectories = trajectory_utils.ObjectTrajectories.from_scenario(scenario)
-            # Choose only yhe agents that are in the simulation
-            logged_trajectories = all_logged_trajectories.gather_objects_by_id(tf.convert_to_tensor(submission_specs.get_sim_agent_ids(scenario)))
-            
-            ids = data['agent']['id']
-            # the predicted sceanrio states are in the form num_agents, num_steps, 3(x, y, theta)
-            # But the scence needs them in 4(x, y, z, theta). so we get the z from the gt.
-            simulated_scenarios = predicted_scenario_states.detach().cpu().numpy()
-            simulated_scenarios = np.insert(simulated_scenarios, 2, logged_trajectories.z.numpy(), axis=-1)
+                ### DRAW SCENARIO ###
+                draw_gif_from_scenario(
+                    predicted_num=gt.shape[0],
+                    scenario=scenario, 
+                    submission_specs=submission_specs,
+                    image_path = f'{self.visualize_dir_path()}/{self.current_epoch}_{batch_idx}_{sample_indx}_scenario.gif',
+                )
 
-            # Create N Rollouts of the full_predicted_scenario_states so simulate 32 Geneartions
-            joint_scenes = []
-            for i in range(self.rollout_num):
-                joint_scene = joint_scene_from_states(simulated_scenarios[:, self.num_historical_steps:],
-                                                    logged_trajectories.object_id)   
-                joint_scenes.append(joint_scene)
+            if self.metrics:
+                ### GROUND TRUTH SCENARIO ###
+                # Get all the trajectories fom the scenairo
+                all_logged_trajectories = trajectory_utils.ObjectTrajectories.from_scenario(scenario)
+                # Choose only yhe agents that are in the simulation
+                logged_trajectories = all_logged_trajectories.gather_objects_by_id(tf.convert_to_tensor(submission_specs.get_sim_agent_ids(scenario)))
+                
+                ids = data['agent']['id']
+                # the predicted sceanrio states are in the form num_agents, num_steps, 3(x, y, theta)
+                # But the scence needs them in 4(x, y, z, theta). so we get the z from the gt.
+                simulated_scenarios = predicted_scenario_states.detach().cpu().numpy()
+                simulated_scenarios = np.insert(simulated_scenarios, 2, logged_trajectories.z.numpy(), axis=-1)
 
-            scenario_rollouts =sim_agents_submission_pb2.ScenarioRollouts(
-            # Note: remember to include the Scenario ID in the proto message.
-            joint_scenes=joint_scenes, scenario_id=scenario.scenario_id) 
+                # Create N Rollouts of the full_predicted_scenario_states so simulate 32 Geneartions
+                joint_scenes = []
+                for i in range(self.rollout_num):
+                    joint_scene = joint_scene_from_states(simulated_scenarios[:, self.num_historical_steps:],
+                                                        logged_trajectories.object_id)   
+                    joint_scenes.append(joint_scene)
 
-            # As before, we can validate the message we just generate.
-            submission_specs.validate_scenario_rollouts(scenario_rollouts, scenario)
+                scenario_rollouts =sim_agents_submission_pb2.ScenarioRollouts(
+                # Note: remember to include the Scenario ID in the proto message.
+                joint_scenes=joint_scenes, scenario_id=scenario.scenario_id) 
 
-            ### Compute the metrics for the scenario rollouts ###
-            config = metrics.load_metrics_config()
-            scenario_metrics = metrics.compute_scenario_metrics_for_bundle(
-                config, scenario, scenario_rollouts)
-            
-            metric_log = {
-                'metametric': scenario_metrics.metametric,
-                'linear_acceleration_likelihood': scenario_metrics.linear_acceleration_likelihood,
-                'time_to_collision_likelihood': scenario_metrics.time_to_collision_likelihood,
-                'offroad_indication_likelihood': scenario_metrics.offroad_indication_likelihood,
-                'min_average_displacement_error': scenario_metrics.min_average_displacement_error,
-                'linear_speed_likelihood': scenario_metrics.linear_speed_likelihood,
-                'distance_to_road_edge_likelihood': scenario_metrics.distance_to_road_edge_likelihood,
-                'distance_to_nearest_object_likelihood': scenario_metrics.distance_to_nearest_object_likelihood,
-                'collision_indication_likelihood': scenario_metrics.collision_indication_likelihood,
-                'average_displacement_error': scenario_metrics.average_displacement_error,
-                'angular_speed_likelihood': scenario_metrics.angular_speed_likelihood,
-                'angular_acceleration_likelihood': scenario_metrics.angular_acceleration_likelihood
-            }
+                # As before, we can validate the message we just generate.
+                submission_specs.validate_scenario_rollouts(scenario_rollouts, scenario)
 
-            # these are the validation metrics
-            self.scenario_rollouts.append(metric_log)
-            self.log('val_metametric', metric_log['metametric'], prog_bar=True, on_step=True, on_epoch=True, batch_size=1)
+                ### Compute the metrics for the scenario rollouts ###
+                config = metrics.load_metrics_config()
+                scenario_metrics = metrics.compute_scenario_metrics_for_bundle(
+                    config, scenario, scenario_rollouts)
+                
+                metric_log = {
+                    'metametric': scenario_metrics.metametric,
+                    'linear_acceleration_likelihood': scenario_metrics.linear_acceleration_likelihood,
+                    'time_to_collision_likelihood': scenario_metrics.time_to_collision_likelihood,
+                    'offroad_indication_likelihood': scenario_metrics.offroad_indication_likelihood,
+                    'min_average_displacement_error': scenario_metrics.min_average_displacement_error,
+                    'linear_speed_likelihood': scenario_metrics.linear_speed_likelihood,
+                    'distance_to_road_edge_likelihood': scenario_metrics.distance_to_road_edge_likelihood,
+                    'distance_to_nearest_object_likelihood': scenario_metrics.distance_to_nearest_object_likelihood,
+                    'collision_indication_likelihood': scenario_metrics.collision_indication_likelihood,
+                    'average_displacement_error': scenario_metrics.average_displacement_error,
+                    'angular_speed_likelihood': scenario_metrics.angular_speed_likelihood,
+                    'angular_acceleration_likelihood': scenario_metrics.angular_acceleration_likelihood
+                }
+                self.waymo_metrics.update(scenario_metrics=scenario_metrics)
+
+                writer = self.logger.experiment
+                self.waymo_metrics.compute(writer=writer, step=self.global_step)
+                # these are the validation metrics
+                self.scenario_rollouts.append(metric_log)
+                self.log('val/metametric', metric_log['metametric'], prog_bar=True, on_step=True, on_epoch=True, batch_size=1)
 
     def on_validation_start(self):
         self.gt = []

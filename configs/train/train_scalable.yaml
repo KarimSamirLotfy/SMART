@@ -7,8 +7,8 @@ time_info: &time_info
 
 Dataset:
   root:
-  train_batch_size: 2
-  val_batch_size: 1
+  train_batch_size: 1
+  val_batch_size: 2
   test_batch_size: 1
   shuffle: True
   num_workers: 1
@@ -35,6 +35,10 @@ Trainer:
   ckpt_path: /home/k.lotfy/SMART/lightning_logs/version_15/checkpoints/epoch=27.ckpt
   precision: 32
   accumulate_grad_batches: 1
+  # control training
+  overfit_batches: 5
+  limit_val_batches: 5
+
 
 Model:
   mode: "train"
