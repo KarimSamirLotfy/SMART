@@ -93,7 +93,7 @@ The default config path is `configs/train/train_scalable.yaml`. Ensure you have 
 To evaluate the model, run:
 
 ```eval
-python eval.py --config ${config_path} --pretrain_ckpt ${ckpt_path}
+python val.py --config ${config_path} --pretrain_ckpt ${ckpt_path}
 ```
 This will evaluate the model using the configuration and checkpoint provided.
 

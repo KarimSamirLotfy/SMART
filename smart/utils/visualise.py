@@ -24,11 +24,11 @@ COLOR_DICT = {i: np.array(plt.cm.viridis(i / n)) for i in range(n)}
 
 def draw_gif(
         predicted_num: int, traj: np.ndarray, real_yaw: np.ndarray,
-        data_dict: Dict[str, Any], map: np.array, image_path: str, return_animations=False
+        scenario: Scenario, image_path: str, return_animations=False
 ):
     fig, axis = plt.subplots(1, 1, figsize=(10, 10))
     # the scenario is the map. it is made of positions and we plot all ofthem
-    axis.plot(map[:, 0], map[:, 1], 'k--', alpha=0.5)
+    visualizations.add_map(axis, scenario)
     # visualizations.get_bbox_patch()
     # axis.axis('equal')  # 横纵坐标比例相等
     x_list = list()
@@ -71,7 +71,6 @@ def draw_gif(
         return animations
     animations.save(image_path, writer='ffmpeg', fps=30)
     plt.close('all')  # 避免内存泄漏
-    print(f"{image_path} save success")
     return animations, fig
 
 def get_bbox_patch(
@@ -88,3 +87,83 @@ def get_bbox_patch(
     rect = patches.Rectangle(
         left_rear_global, length, width, angle=np.rad2deg(bbox_yaw), color=color)
     return rect
+
+
+
+def draw_gif_from_scenario(
+        predicted_num,scenario: Scenario, submission_specs, image_path: str, return_animations=False
+    ):
+    fig, axis = plt.subplots(1, 1, figsize=(10, 10))
+    
+    # Add map visualization
+    visualizations.add_map(axis, scenario)
+    
+    # Collect all the tracks that we want to visualize
+    tracks = [track for track in scenario.tracks if track.id in submission_specs.get_sim_agent_ids(scenario)]
+    
+    # Store trajectory points
+    x_list = []
+    y_list = []
+    yaw_list = []
+    width_list = []
+    length_list = []
+    for idx, track in enumerate(tracks):
+        if track.id in submission_specs.get_sim_agent_ids(scenario):
+        # if idx < predicted_num:
+            valids = np.array([state.valid for state in track.states])
+            if np.all(valids):
+                x = np.array([state.center_x for i, state in enumerate(track.states)])
+                y = np.array([state.center_y for i, state in enumerate(track.states)])
+                yaw = np.array([state.heading for i, state in enumerate(track.states)])
+                width = np.array([state.width for i, state in enumerate(track.states)])
+                length = np.array([state.length for i, state in enumerate(track.states)])
+                x_list.append(x)
+                y_list.append(y)
+                yaw_list.append(yaw)
+                width_list.append(width)
+                length_list.append(length)
+    
+    # # Stack the x and y coordinates
+    x_list = np.stack(x_list, axis=0)
+    y_list = np.stack(y_list, axis=0)
+    yaw_list = np.stack(yaw_list, axis=0)
+    width_list = np.stack(width_list, axis=0)
+    length_list = np.stack(length_list, axis=0)
+    # Function to animate the plotting of the tracks
+    # Adapted function using the better bounding box implementation
+    def animate(t: int) -> list[patches.Rectangle]:
+        # Clear previous patches
+        for _ in range(len(axis.patches)):
+            axis.patches.pop()
+        
+        bboxes = []
+        for j in range(len(x_list)):
+            # Use the get_bbox_patch method for better bounding boxes
+            bboxes.append(axis.add_patch(
+                get_bbox_patch(
+                    x=x_list[j, t], 
+                    y=y_list[j, t], 
+                    bbox_yaw=yaw_list[j, t],  # Assuming yaw_list contains the orientation for each object
+                    length=length_list[j, t], 
+                    width=width_list[j, t], 
+                    color=COLOR_DICT[j % len(COLOR_DICT)]
+                )
+            ))
+        return bboxes
+
+
+    # Create the animation
+    animations = animation.FuncAnimation(
+        fig, animate, frames=x_list.shape[1], interval=100, blit=True
+    )
+
+    axis.set_xticks([])
+    axis.set_yticks([])
+
+    if return_animations:
+        return animations
+    
+    # Save the GIF
+    animations.save(image_path, writer='ffmpeg', fps=30)
+    plt.close('all')  # Avoid memory leak
+    return animations, fig
