@@ -660,13 +660,13 @@ import tensorflow as tf
 from waymo_open_dataset.protos import scenario_pb2
 
 
-def wm2argo(file, dir_name, output_dir):
+def wm2argo(file, dir_name, output_dir, validation=False):
     file_path = os.path.join(dir_name, file)
     dataset = tf.data.TFRecordDataset(file_path, compression_type='', num_parallel_reads=3)
-    for cnt, data in enumerate(dataset):
+    for cnt, data_raw in enumerate(dataset):
         print(cnt)
         scenario = scenario_pb2.Scenario()
-        scenario.ParseFromString(bytearray(data.numpy()))
+        scenario.ParseFromString(bytearray(data_raw.numpy()))
         save_infos = process_single_data(scenario) # pkl2mtr
         map_info = save_infos["map_infos"]
         track_info = save_infos['track_infos']
@@ -682,6 +682,8 @@ def wm2argo(file, dir_name, output_dir):
         map_data = get_map_features(map_info, tf_current_light)
         new_agents_array = process_agent(track_info, tracks_to_predict, sdc_track_index, scenario_id, 0, 91) # mtr2argo
         data = dict()
+        if validation: # Only the validation set has this field as it is not needed for training.
+            data['scenario_raw'] = data_raw
         data['scenario_id'] = new_agents_array['scenario_id'].values[0]
         data['city'] = new_agents_array['city'].values[0]
         data['agent'] = get_agent_features(new_agents_array, av_id, num_historical_steps=11)
@@ -709,8 +711,9 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument('--input_dir', type=str, default='data/waymo/scenario/training')
     parser.add_argument('--output_dir', type=str, default='data/waymo_processed/training')
+    parser.add_argument('--validation', type=bool, default=False)
     args = parser.parse_args()
     files = os.listdir(args.input_dir)
     for file in tqdm(files):
-        wm2argo(file, args.input_dir, args.output_dir)
+        wm2argo(file, args.input_dir, args.output_dir, args.validation)
     # batch_process9s_transformer(args.input_dir, args.output_dir, num_workers="ur_cpu_count")
