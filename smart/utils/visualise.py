@@ -20,7 +20,8 @@ from waymo_open_dataset.wdl_limited.sim_agents_metrics import metrics
 
 
 n = 100
-COLOR_DICT = {i: np.array(plt.cm.viridis(i / n)) for i in range(n)}
+COLOR_DICT = {i: np.array(plt.cm.Set2(i / n)) for i in range(n)}
+
 
 def draw_gif(
         predicted_num: int, traj: np.ndarray, real_yaw: np.ndarray,

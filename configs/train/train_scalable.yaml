@@ -7,14 +7,14 @@ time_info: &time_info
 
 Dataset:
   root:
-  train_batch_size: 1
-  val_batch_size: 2
+  train_batch_size: 8
+  val_batch_size: 6
   test_batch_size: 1
   shuffle: True
   num_workers: 1
   pin_memory: True
   persistent_workers: True
-  train_raw_dir: ["data/valid_demo"]
+  train_raw_dir: ["data/waymo_processed/training"]
   val_raw_dir: ["data/waymo_processed/validation"]
   test_raw_dir:
   transform: WaymoTargetBuilder
@@ -26,18 +26,18 @@ Dataset:
 
 Trainer:
   strategy: ddp_find_unused_parameters_false
-  accelerator: "cpu"
-  devices: 1
-  max_epochs: 32
+  accelerator: "gpu"
+  devices: 2
+  max_epochs: 40
   save_ckpt_path: null
   num_nodes: 1
   mode:
-  ckpt_path: /home/k.lotfy/SMART/lightning_logs/version_15/checkpoints/epoch=27.ckpt
+  ckpt_path: "/home/k.lotfy/SMART/lightning_logs/version_3/checkpoints/epoch=02.ckpt"
   precision: 32
   accumulate_grad_batches: 1
   # control training
-  overfit_batches: 5
-  limit_val_batches: 5
+  overfit_batches: 0
+  limit_val_batches: 3
 
 
 Model:

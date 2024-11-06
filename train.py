@@ -4,6 +4,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import LearningRateMonitor
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.strategies import DDPStrategy
+import torch
 from smart.utils.config import load_config_act
 from smart.datamodules import MultiDataModule
 from smart.model import SMART
@@ -41,6 +42,12 @@ if __name__ == '__main__':
                                        save_top_k=5,
                                        mode='max')
     lr_monitor = LearningRateMonitor(logging_interval='epoch')
+    ### Speed ups ###
+    # Even faster, but also less precise
+    # torch.set_float32_matmul_precision("medium")
+    # model = torch.compile(model=model)
+    #################
+
     trainer = pl.Trainer(accelerator=trainer_config.accelerator, devices=trainer_config.devices,
                          strategy=strategy,
                          accumulate_grad_batches=trainer_config.accumulate_grad_batches,

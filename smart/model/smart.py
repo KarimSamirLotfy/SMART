@@ -315,7 +315,6 @@ class SMART(pl.LightningModule):
 
                 # these are the validation metrics
                 self.metrics_logs_rollouts.append(metric_log)
-                self.log('val/metametric', metric_log['metametric'], prog_bar=True, on_step=True, on_epoch=True, batch_size=1)
 
 
     def on_validation_start(self):
