@@ -22,9 +22,9 @@ class WaymoMetrics(torchmetrics.Metric):
         super().__init__(dist_sync_on_step=False)
         self.metric_names = WAYMO_METRIC_NAMES
 
-        # Initialize a MeanMetric instance for each metric name
-        self.metrics = {name: torchmetrics.MeanMetric() for name in self.metric_names}
-
+        # Add the metrics as attributes to the class
+        for name in self.metric_names:
+            setattr(self, name, torchmetrics.MeanMetric().to(self.device))
     def update(self, scenario_metrics):
         """
         Updates each metric with the new batch data.
@@ -32,19 +32,13 @@ class WaymoMetrics(torchmetrics.Metric):
         Parameters:
         - scenario_metrics: A list of metric objects for each sample in the batch.
         """
-        # Collect individual sample metrics into lists for each metric
-        metric_samples = {name: [] for name in self.metric_names}
-        
-        # Extract metric values from each sample in the batch
-        for name in self.metric_names:
-            metric_samples[name].append(getattr(scenario_metrics, name))
-        
+
         # Update each MeanMetric with the batch data
-        for name, values in metric_samples.items():
-            values_tensor = torch.tensor(values)
-            self.metrics[name].update(values_tensor)
-            # Store the batch values for histogram logging later
-            setattr(self, f"{name}_values", values_tensor)
+        for name in self.metric_names:
+            value = getattr(scenario_metrics, name)
+            values_tensor = torch.tensor(value, device=self.device)
+            getattr(self, name).update(values_tensor)
+
 
     def compute(self, step, writer):
         """
@@ -53,22 +47,16 @@ class WaymoMetrics(torchmetrics.Metric):
         Parameters:
         - step: The current step or epoch for logging in TensorBoard.
         """
-        for name, metric in self.metrics.items():
+        for name in self.metric_names:
+            metric = getattr(self, name)
             # Log the computed average to TensorBoard
             avg_value = metric.compute()
             writer.add_scalar(f'metrics/average_{name}', avg_value, step)
-            
-            # Log histogram for the metric's per-sample distribution in the batch
-            values_tensor = getattr(self, f"{name}_values")
-            writer.add_histogram(f'metrics/histogram_{name}', values_tensor, step)
 
-        # Reset metrics after logging
-        self.reset()
 
     def reset(self):
         """
         Resets all metrics to start fresh for the next batch.
         """
-        for metric in self.metrics.values():
-            metric.reset()
-
+        for name in self.metric_names:
+            getattr(self, name).reset()

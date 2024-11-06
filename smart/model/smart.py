@@ -12,7 +12,6 @@ from smart.modules import SMARTDecoder
 from torch.optim.lr_scheduler import LambdaLR
 import math
 import numpy as np
-import tensorflow as tf
 import pickle
 from collections import defaultdict
 import os
@@ -103,7 +102,7 @@ class SMART(pl.LightningModule):
         self.minFDE = minFDE(max_guesses=1)
         self.TokenCls = TokenCls(max_guesses=1)
         self.waymo_metrics = WaymoMetrics()
-
+        
         self.test_predictions = dict()
         self.cls_loss = nn.CrossEntropyLoss(label_smoothing=0.1)
         self.map_cls_loss = nn.CrossEntropyLoss(label_smoothing=0.1)
@@ -150,7 +149,7 @@ class SMART(pl.LightningModule):
     def training_step(self,
                       data,
                       batch_idx):
-        data = self.match_token_map(data)
+        data = self.match_token_map(data) # preprocess map. relative position + orientiaton
         data = self.sample_pt_pred(data) # HEre some sampling happens. 
         if isinstance(data, Batch):
             data['agent']['av_index'] += data['agent']['ptr'][:-1]
@@ -232,7 +231,7 @@ class SMART(pl.LightningModule):
                 # get the scenario itself, for visualization and metrics
                 data_raw = data['scenario_raw'][element_indx]
                 scenario = scenario_pb2.Scenario()
-                scenario.ParseFromString(bytearray(data_raw.numpy())) 
+                scenario.ParseFromString(bytearray(data_raw)) 
 
                 ### DRAW PREDCITED TRAJECTORY ###
                 draw_gif(
@@ -271,7 +270,7 @@ class SMART(pl.LightningModule):
                 # Get all the trajectories fom the scenairo
                 all_logged_trajectories = trajectory_utils.ObjectTrajectories.from_scenario(scenario)
                 # Choose only yhe agents that are in the simulation
-                logged_trajectories = all_logged_trajectories.gather_objects_by_id(tf.convert_to_tensor(submission_specs.get_sim_agent_ids(scenario)))
+                logged_trajectories = all_logged_trajectories.gather_objects_by_id(torch.tensor(submission_specs.get_sim_agent_ids(scenario)))
                 
                 ids = data['agent']['id']
                 # the predicted sceanrio states are in the form num_agents, num_steps, 3(x, y, theta)
@@ -314,18 +313,28 @@ class SMART(pl.LightningModule):
                 }
                 self.waymo_metrics.update(scenario_metrics=scenario_metrics)
 
-                writer = self.logger.experiment
-                self.waymo_metrics.compute(writer=writer, step=self.global_step)
                 # these are the validation metrics
-                self.scenario_rollouts.append(metric_log)
+                self.metrics_logs_rollouts.append(metric_log)
                 self.log('val/metametric', metric_log['metametric'], prog_bar=True, on_step=True, on_epoch=True, batch_size=1)
+
 
     def on_validation_start(self):
         self.gt = []
         self.pred = []
-        self.scenario_rollouts = []
+        self.metrics_logs_rollouts = []
         self.batch_metric = defaultdict(list)
+        self.waymo_metrics.reset()
 
+
+    def on_validation_end(self):
+        # log each waymo metric
+        writer = self.logger.experiment
+        self.waymo_metrics.compute(writer=writer, step=self.global_step)
+
+
+
+
+        
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr)
 

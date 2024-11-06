@@ -666,7 +666,8 @@ def wm2argo(file, dir_name, output_dir, validation=False):
     for cnt, data_raw in enumerate(dataset):
         print(cnt)
         scenario = scenario_pb2.Scenario()
-        scenario.ParseFromString(bytearray(data_raw.numpy()))
+        data_raw_numpy = data_raw.numpy()
+        scenario.ParseFromString(bytearray(data_raw_numpy))
         save_infos = process_single_data(scenario) # pkl2mtr
         map_info = save_infos["map_infos"]
         track_info = save_infos['track_infos']
@@ -683,7 +684,7 @@ def wm2argo(file, dir_name, output_dir, validation=False):
         new_agents_array = process_agent(track_info, tracks_to_predict, sdc_track_index, scenario_id, 0, 91) # mtr2argo
         data = dict()
         if validation: # Only the validation set has this field as it is not needed for training.
-            data['scenario_raw'] = data_raw
+            data['scenario_raw'] = data_raw_numpy
         data['scenario_id'] = new_agents_array['scenario_id'].values[0]
         data['city'] = new_agents_array['city'].values[0]
         data['agent'] = get_agent_features(new_agents_array, av_id, num_historical_steps=11)

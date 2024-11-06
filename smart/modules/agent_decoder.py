@@ -334,7 +334,7 @@ class SMARTAgentDecoder(nn.Module):
             feat_a = self.a2a_attn_layers[i](feat_a, r_a2a, edge_index_a2a) # Do attention on the agent to agent edges
             feat_a = feat_a.reshape(num_step, -1, self.hidden_dim).transpose(0, 1)
 
-        num_agent, num_step, hidden_dim, traj_num, traj_dim = agent_token_traj.shape
+        num_agent, num_step, num_of_anchors, traj_num, traj_dim = agent_token_traj.shape
         next_token_prob = self.token_predict_head(feat_a) # This features now has the information of the agent to the agent, to the map the the other agents. 
         next_token_prob_softmax = torch.softmax(next_token_prob, dim=-1) # (num_agents, num_steps, token_size==2048)
         _, next_token_idx = torch.topk(next_token_prob_softmax, k=10, dim=-1)

@@ -12,6 +12,7 @@ from smart.utils.log import Logging
 
 if __name__ == '__main__':
     parser = ArgumentParser()
+
     Predictor_hash = {"smart": SMART, }
     parser.add_argument('--config', type=str, default='configs/train/train_scalable.yaml')
     parser.add_argument('--pretrain_ckpt', type=str, default="")
