@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from torch_geometric.data import HeteroData
 from smart.modules.agent_decoder import SMARTAgentDecoder
+from smart.modules.diff_agent_decoder import DiffSMARTAgentDecoder
 from smart.modules.map_decoder import SMARTMapDecoder
 
 
@@ -28,6 +29,7 @@ class SMARTDecoder(nn.Module):
                  use_intention=False,
                  token_size=512) -> None:
         super(SMARTDecoder, self).__init__()
+        self.diffusion = True
         self.map_encoder = SMARTMapDecoder(
             dataset=dataset,
             input_dim=input_dim,
@@ -41,22 +43,40 @@ class SMARTDecoder(nn.Module):
             dropout=dropout,
             map_token=map_token
         )
-        self.agent_encoder = SMARTAgentDecoder(
-            dataset=dataset,
-            input_dim=input_dim,
-            hidden_dim=hidden_dim,
-            num_historical_steps=num_historical_steps,
-            time_span=time_span,
-            pl2a_radius=pl2a_radius,
-            a2a_radius=a2a_radius,
-            num_freq_bands=num_freq_bands,
-            num_layers=num_agent_layers,
-            num_heads=num_heads,
-            head_dim=head_dim,
-            dropout=dropout,
-            token_size=token_size,
-            token_data=token_data
-        )
+        if self.diffusion:
+            self.agent_encoder = DiffSMARTAgentDecoder(
+                dataset=dataset,
+                input_dim=input_dim,
+                hidden_dim=hidden_dim,
+                num_historical_steps=num_historical_steps,
+                time_span=time_span,
+                pl2a_radius=pl2a_radius,
+                a2a_radius=a2a_radius,
+                num_freq_bands=num_freq_bands,
+                num_layers=num_agent_layers,
+                num_heads=num_heads,
+                head_dim=head_dim,
+                dropout=dropout,
+                token_size=token_size,
+                token_data=token_data
+            )
+        else:
+            self.agent_encoder = SMARTAgentDecoder(
+                dataset=dataset,
+                input_dim=input_dim,
+                hidden_dim=hidden_dim,
+                num_historical_steps=num_historical_steps,
+                time_span=time_span,
+                pl2a_radius=pl2a_radius,
+                a2a_radius=a2a_radius,
+                num_freq_bands=num_freq_bands,
+                num_layers=num_agent_layers,
+                num_heads=num_heads,
+                head_dim=head_dim,
+                dropout=dropout,
+                token_size=token_size,
+                token_data=token_data
+            )
         self.map_enc = None
 
     def forward(self, data: HeteroData) -> Dict[str, torch.Tensor]:
