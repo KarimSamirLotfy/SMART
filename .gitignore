@@ -134,3 +134,4 @@ data/pos_data
 res_metrics*
 gathered*
 old/
+logs/

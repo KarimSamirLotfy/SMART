@@ -108,7 +108,7 @@ class SMART(pl.LightningModule):
         self.map_cls_loss = nn.CrossEntropyLoss(label_smoothing=0.1)
         self.inference_token = True
         self.visualize = True
-        self.metrics = True
+        self.metrics = False
         self.visualize_directory = 'visualize'
         self.rollout_num = submission_specs.N_ROLLOUTS
 
@@ -316,7 +316,6 @@ class SMART(pl.LightningModule):
                 # these are the validation metrics
                 self.metrics_logs_rollouts.append(metric_log)
 
-
     def on_validation_start(self):
         self.gt = []
         self.pred = []
@@ -324,15 +323,10 @@ class SMART(pl.LightningModule):
         self.batch_metric = defaultdict(list)
         self.waymo_metrics.reset()
 
-
     def on_validation_end(self):
         # log each waymo metric
         writer = self.logger.experiment
         self.waymo_metrics.compute(writer=writer, step=self.global_step)
-
-
-
-
         
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr)
@@ -474,7 +468,6 @@ class SMART(pl.LightningModule):
         data['pt_token']['pt_target_mask'] = pt_target_mask[traj_mask]
 
         return data
-
 
     def visualize_dir_path(self):
         log_dir = self.logger.log_dir

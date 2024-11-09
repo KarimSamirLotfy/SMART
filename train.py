@@ -58,10 +58,10 @@ if __name__ == '__main__':
                          gradient_clip_val=0.5,
                          overfit_batches=trainer_config.overfit_batches,
                          limit_val_batches=trainer_config.limit_val_batches,)
-    if args.ckpt_path == "":
+    if args.ckpt_path == "" and config.Trainer['ckpt_path'] == "":
         trainer.fit(model,
                     datamodule)
     else:
         trainer.fit(model,
                     datamodule,
-                    ckpt_path=args.ckpt_path)
+                    ckpt_path=config.Trainer['ckpt_path'])

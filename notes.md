@@ -1,11 +1,3 @@
-
-* Running bash install_pyg.sh
-ERROR: torch_cluster-1.6.0+pt112cu113-cp310-cp39-linux_x86_64.whl is not a supported wheel on this platform.
-ERROR: torch_scatter-2.1.0+pt112cu113-cp39-cp39-linux_x86_64.whl is not a supported wheel on this platform.
-ERROR: torch_sparse-0.6.16+pt112cu113-cp39-cp39-linux_x86_64.whl is not a supported wheel on this platform.
-ERROR: torch_spline_conv-1.2.1+pt112cu113-cp39-cp39-linux_x86_64.whl is not a supported wheel on this platform.
-
-
 # Arch
 * Tokenization
     Agents have predefeined tokens. each veichle type has 2048 tokens. each token is 4 timestps of x, y so shape is 2048, 4, 2
@@ -16,10 +8,10 @@ ERROR: torch_spline_conv-1.2.1+pt112cu113-cp39-cp39-linux_x86_64.whl is not a su
 
 * This model is multi-task. a pseudo task for training is Road next token predictions on the polylines or points. 
 
-* this makes it harder to visualise
+* Tokenization uses k-disks, which is a technqiue to do get the tokens from the dataset. 
 # TODO
-[] Create cisualsations
-[] Create Metrics
+[x] Create cisualsations
+[x] Create Metrics
 
 
 # How to actually turn this into a diffusion model
@@ -41,43 +33,25 @@ ERROR: torch_spline_conv-1.2.1+pt112cu113-cp39-cp39-linux_x86_64.whl is not a su
     ## extract the 
     h. then token_predict_head turns each 128 to 2048 which is then the softmax of the action token to choose. nothing to see here
 
+### Issues with diffusion models in this pace
+1. if we simply use diffsuion model right after the agent_token embedding. what is he ground truth. ...
+* first idea. noise the feat_a which is just mlp that turns a lot of info to 128. then move it into the denoiser. then tell it to return the noise, and now you have the denoised_noise and noise. 
+* Issue, unlike normal latent diffusion, we dont have encoder decoder arch
+agent_info --mlp--> agent_embedding -----Attention, map, agents, time----> new_agent_embedding --mlp---> tokens
+
+2. Use a difusion technqes that actually works on sequence discreet data. 2 options discreet diffusion. and embedding based diffusion. only mebdding allows for classfier conditionng which is baseically sampling. 
+* 
+
+so we are not encoding, decoding
+in stable dffisuon the latents, the encoder gives latent. then we do on latent then we return the latent to decoder. but notice there is a ltent. the latent that goes in is the correct answer. here no, the latent that goes in is not the ccrect answer. so telling the model denoise the noise i added to the agent_embeddings does not make sense. as the model will do it's best to recover the agent embeddings instead of creaing the new_agent_embeddings that actually have what we want and need. 
+
+
+
 
 # TRaining
-8 Once can barely do batch size of 8. on wonder we need A100s
-
-### ERRORS
-LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0,1]
-LOCAL_RANK: 1 - CUDA_VISIBLE_DEVICES: [0,1]
-
-  | Name          | Type             | Params
----------------------------------------------------
-0 | encoder       | SMARTDecoder     | 7.2 M 
-1 | minADE        | minADE           | 0     
-2 | minFDE        | minFDE           | 0     
-3 | TokenCls      | TokenCls         | 0     
-4 | waymo_metrics | WaymoMetrics     | 0     
-5 | cls_loss      | CrossEntropyLoss | 0     
-6 | map_cls_loss  | CrossEntropyLoss | 0     
----------------------------------------------------
-7.2 M     Trainable params
-0         Non-trainable params
-7.2 M     Total params
-28.605    Total estimated model params size (MB)
-/home/k.lotfy/anaconda3/envs/smart/lib/python3.10/site-packages/pytorch_lightning/trainer/connectors/data_connector.py:261: UserWarning: You requested to overfit but enabled train dataloader shuffling. We are turning off the train dataloader shuffling for you.
-  rank_zero_warn(
-/home/k.lotfy/anaconda3/envs/smart/lib/python3.10/site-packages/pytorch_lightning/trainer/connectors/data_connector.py:432: PossibleUserWarning: The dataloader, train_dataloader, does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` (try 64 which is the number of cpus on this machine) in the `DataLoader` init to improve performance.
-  rank_zero_warn(
-/home/k.lotfy/anaconda3/envs/smart/lib/python3.10/site-packages/pytorch_lightning/loops/fit_loop.py:280: PossibleUserWarning: The number of training batches (1) is smaller than the logging interval Trainer(log_every_n_steps=50). Set a lower value for log_every_n_steps if you want to see logs for the training epoch.
-  rank_zero_warn(
-/home/k.lotfy/anaconda3/envs/smart/lib/python3.10/site-packages/pytorch_lightning/trainer/connectors/data_connector.py:432: PossibleUserWarning: The dataloader, val_dataloader, does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` (try 64 which is the number of cpus on this machine) in the `DataLoader` init to improve performance.
-  rank_zero_warn(
-Epoch 0: 100%|█| 1/1 [01:01<002024-11-04 00:39:28.110780: E tensorflow/compiler/xla/stream_executor/cuda/cuda_driver.cc:266] failed call to cuInit: CUDA_ERROR_NOT_INITIALIZED: initialization error
-2024-11-04 00:39:28.110846: I tensorflow/compiler/xla/stream_executor/cuda/cuda_diagnostics.cc:168] retrieving CUDA diagnostic information for host: dnde-crd-ltl-mlops
-2024-11-04 00:39:28.110853: I tensorflow/compiler/xla/stream_executor/cuda/cuda_diagnostics.cc:175] hostname: dnde-crd-ltl-mlops
-2024-11-04 00:39:28.111357: I tensorflow/compiler/xla/stream_executor/cuda/cuda_diagnostics.cc:199] libcuda reported version is: NOT_FOUND: was unable to find libcuda.so DSO loaded into this program
-2024-11-04 00:39:28.111403: I tensorflow/compiler/xla/stream_executor/cuda/cuda_diagnostics.cc:203] kernel reported version is: 535.183.6
-2024-11-04 00:39:31.188187: W tensorflow/core/common_runtime/gpu/gpu_device.cc:1956] Cannot dlopen some GPU libraries. Please make sure the missing libraries mentioned above are installed properly if you would like to use GPU. Follow the guide at https://www.tensorflow.org/install/gpu for how to download and setup the required libraries for your platform.
-Skipping registering GPU devices...
+* 8 Once can barely do batch size of 8. on wonder we need A100s
+* Training the OG model needed 23 hours on 32 V100s GPU
+* our training run. 1 epoch takes around 50 hours. 
 
 # torch cuda 11.3 website for tenfolow says u need 12.3
 * for waymo we have waymo-open-dataset-tf-2-12-0==1.6.4 newest version or pip install waymo-open-dataset-tf-2-11-0==1.6.1 as the latest release needs python==3.10
