@@ -3,7 +3,9 @@ from typing import Dict, Mapping, Optional
 import torch
 import torch.nn as nn
 from smart.layers import MLPLayer
+from smart.layers.adaLn import AdaLN
 from smart.layers.attention_layer import AttentionLayer
+from smart.layers.dit_blocks import DiTBlock, TimestepEmbedder
 from smart.layers.fourier_embedding import FourierEmbedding, MLPEmbedding
 from torch_cluster import radius, radius_graph
 from torch_geometric.data import Batch, HeteroData
@@ -84,7 +86,6 @@ class DiffSMARTAgentDecoder(nn.Module):
         self.token_emb_ped = MLPEmbedding(input_dim=input_dim_token, hidden_dim=hidden_dim)
         self.token_emb_cyc = MLPEmbedding(input_dim=input_dim_token, hidden_dim=hidden_dim)
         self.fusion_emb = MLPEmbedding(input_dim=self.hidden_dim * 2, hidden_dim=self.hidden_dim)
-        # self.vocab_embedding = torch.nn.Embedding(token_size, hidden_dim)
         self.t_attn_layers = nn.ModuleList(
             [AttentionLayer(hidden_dim=hidden_dim, num_heads=num_heads, head_dim=head_dim, dropout=dropout,
                             bipartite=False, has_pos_emb=True) for _ in range(num_layers)]
@@ -97,6 +98,11 @@ class DiffSMARTAgentDecoder(nn.Module):
             [AttentionLayer(hidden_dim=hidden_dim, num_heads=num_heads, head_dim=head_dim, dropout=dropout,
                             bipartite=False, has_pos_emb=True) for _ in range(num_layers)]
         )
+        self.conditioned_attn_layers = nn.ModuleList(
+            [DiTBlock(hidden_dim=hidden_dim, num_heads=num_heads) for _ in range(num_layers)]
+        )
+        self.diffusion_timestep_embedder = TimestepEmbedder(hidden_dim=hidden_dim, frequency_embedding_size=hidden_dim)
+        self.diffusion_condition_layers = nn.ModuleList([AdaLN(hidden_dim=hidden_dim) for _ in range(num_layers)])
         self.token_size = token_size
         self.token_predict_head = MLPLayer(input_dim=hidden_dim, hidden_dim=hidden_dim,
                                            output_dim=self.token_size)
@@ -107,6 +113,11 @@ class DiffSMARTAgentDecoder(nn.Module):
         self.shift = 5
         self.beam_size = 5
         self.hist_mask = True
+
+        # The original data has 91 steps. 11 historical steps and 80 future steps.
+        # the shift is the number of steps in a single token. So if the shift is 5, then the token will have 4 steps in it.
+        # the number of historical tokens. is the number of historical steps divided by the shift. to get us how many tokens we use to predict. which should be 11 // 5 = 2
+        self.historical_tokens = self.num_historical_steps // self.shift 
 
     def transform_rel(self, token_traj, prev_pos, prev_heading=None):
         if prev_heading is None:
@@ -224,10 +235,10 @@ class DiffSMARTAgentDecoder(nn.Module):
         head_t = head_a.reshape(-1)
         head_vector_t = head_vector_a.reshape(-1, 2)
         hist_mask = mask.clone()
-
+        timesteps = mask.shape[1]
         if self.hist_mask and self.training:
             hist_mask[
-                torch.arange(mask.shape[0]).unsqueeze(1), torch.randint(0, mask.shape[1], (num_agent, 10))] = False
+                torch.arange(mask.shape[0]).unsqueeze(1), torch.randint(0, timesteps, (num_agent, 10))] = False
             mask_t = hist_mask.unsqueeze(2) & hist_mask.unsqueeze(1)
         elif inference_mask is not None:
             mask_t = hist_mask.unsqueeze(2) & inference_mask.unsqueeze(1)
@@ -235,8 +246,8 @@ class DiffSMARTAgentDecoder(nn.Module):
             mask_t = hist_mask.unsqueeze(2) & hist_mask.unsqueeze(1)
 
         edge_index_t = dense_to_sparse(mask_t)[0] # this is the index of where the edges are
-        edge_index_t = edge_index_t[:, edge_index_t[1] > edge_index_t[0]]
-        edge_index_t = edge_index_t[:, edge_index_t[1] - edge_index_t[0] <= self.time_span / self.shift]
+        edge_index_t = edge_index_t[:, edge_index_t[1] > edge_index_t[0]] # Making relations by directional
+        edge_index_t = edge_index_t[:, edge_index_t[1] - edge_index_t[0] <= self.time_span / self.shift] # maximum interaction temporaly
         rel_pos_t = pos_t[edge_index_t[0]] - pos_t[edge_index_t[1]]
         rel_head_t = wrap_angle(head_t[edge_index_t[0]] - head_t[edge_index_t[1]])
         r_t = torch.stack(
@@ -288,7 +299,7 @@ class DiffSMARTAgentDecoder(nn.Module):
 
     def forward(self,
                 data: HeteroData,
-                map_enc: Mapping[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+                map_enc: Mapping[str, torch.Tensor], timesteps: torch.Tensor) -> Dict[str, torch.Tensor]:
         pos_a = data['agent']['token_pos'] # num_agents, num_steps, 2
         head_a = data['agent']['token_heading'] # num_agents, num_steps
         head_vector_a = torch.stack([head_a.cos(), head_a.sin()], dim=-1) # num_agents, num_steps, 2
@@ -322,44 +333,51 @@ class DiffSMARTAgentDecoder(nn.Module):
         ### ENCODING AGENT ###
         # agent_token_traj.shape = (num_agent, num_step, len(agent_tokens)==2048, timesteps_per_token(4), x,y(2)) so for each agent, for each timestep==18, for each movement acnhor token, 4 steps, 2
         # feat_a.shape = (num_agents, num_steps, hidden_dim)
-        feat_a, agent_token_traj = self.agent_token_embedding(data, agent_category, agent_token_index,
+        feat_a_agent, agent_token_traj = self.agent_token_embedding(data, agent_category, agent_token_index,
                                                               pos_a, head_vector_a)
-        
-        # add noise to feat_a
-        
         ##### LATENT DIFFUSION #####
-        agent_token_index # This is the ground truth
-
+        feat_a = data['features']
+        timesteps_per_agent = timesteps[data['agent']['batch']]
+        timesteps_condition = self.diffusion_timestep_embedder(timesteps_per_agent)
         for i in range(self.num_layers):
+            # condition on timestep
+            feat_a = self.diffusion_condition_layers[i](feat_a, timesteps_condition)
             feat_a = feat_a.reshape(-1, self.hidden_dim) # from (num_agents, num_timesteps, hidden_dim) to (num_agents*num_timesteps, hidden_dim)
-            feat_a = self.t_attn_layers[i](feat_a, r_t, edge_index_t) # Do attention on the temporal edges
+            feat_a_agent = feat_a_agent.reshape(-1, self.hidden_dim) # from (num_agents, num_timesteps, hidden_dim) to (num_agents*num_timesteps, hidden_dim)
+            feat_a = self.t_attn_layers[i]((feat_a_agent, feat_a), r_t, edge_index_t) # Do attention on the temporal edges
             feat_a = feat_a.reshape(-1, num_step,
+                                    self.hidden_dim).transpose(0, 1).reshape(-1, self.hidden_dim) # just transpose and reshape back. to make spacatial makes sense
+            feat_a_agent = feat_a_agent.reshape(-1, num_step,
                                     self.hidden_dim).transpose(0, 1).reshape(-1, self.hidden_dim)
             map_encoding = map_enc['x_pt'].repeat_interleave(repeats=num_step, dim=0).reshape(-1, num_step, self.hidden_dim).transpose(0, 1).reshape(-1, self.hidden_dim)
             feat_a = self.pt2a_attn_layers[i]((map_encoding,feat_a), r_pl2a, edge_index_pl2a) # Do attention on the map to agent edges
-            feat_a = self.a2a_attn_layers[i](feat_a, r_a2a, edge_index_a2a) # Do attention on the agent to agent edges
+            feat_a = self.a2a_attn_layers[i]((feat_a_agent, feat_a), r_a2a, edge_index_a2a) # Do attention on the agent to agent edges
             feat_a = feat_a.reshape(num_step, -1, self.hidden_dim).transpose(0, 1)
+            feat_a_agent = feat_a_agent.reshape(num_step, -1, self.hidden_dim).transpose(0, 1)
         ##### LATENT DIFFUSION #####
         # model here should predict feat_a
         num_agent, num_step, num_of_anchors, traj_num, traj_dim = agent_token_traj.shape
         ### PREDICT NEXT TOKEN ###
-        next_token_prob = self.token_predict_head(feat_a) # This features now has the information of the agent to the agent, to the map the the other agents. 
-        next_token_prob_softmax = torch.softmax(next_token_prob, dim=-1) # (num_agents, num_steps, token_size==2048)
-        _, next_token_idx = torch.topk(next_token_prob_softmax, k=10, dim=-1)
+        token_prob = self.token_predict_head(feat_a) # This features now has the information of the agent to the agent, to the map the the other agents. 
+        token_prob_softmax = torch.softmax(token_prob, dim=-1) # (num_agents, num_steps, token_size==2048)
+        _, token_idx = torch.topk(token_prob_softmax, k=10, dim=-1)
 
-        next_token_index_gt = agent_token_index.roll(shifts=-1, dims=1)
-        next_token_eval_mask = mask.clone()
-        next_token_eval_mask = next_token_eval_mask * next_token_eval_mask.roll(shifts=-1, dims=1) * next_token_eval_mask.roll(shifts=1, dims=1)
-        next_token_eval_mask[:, -1] = False
+        # next_token_index_gt = agent_token_index.roll(shifts=-1, dims=1)
+        token_index_gt = agent_token_index
+        token_eval_mask = mask.clone()
+        # next_token_eval_mask = next_token_eval_mask * next_token_eval_mask.roll(shifts=-1, dims=1) * next_token_eval_mask.roll(shifts=1, dims=1)
+        # next_token_eval_mask[:, -1] = False
+        token_eval_mask[:, -1] = False
         ### PREDICT NEXT TOKEN ###
 
         ### Predict the next trajectory ###
 
         return {'x_a': feat_a,
-                'next_token_idx': next_token_idx,
-                'next_token_prob': next_token_prob,
-                'next_token_idx_gt': next_token_index_gt,
-                'next_token_eval_mask': next_token_eval_mask,
+                'token_idx': token_idx,
+                'token_prob': token_prob,
+                'token_idx_gt': token_index_gt,
+                'token_eval_mask': token_eval_mask,
+                'predicted_features': feat_a,
                 }
 
     def inference(self,
@@ -369,7 +387,7 @@ class DiffSMARTAgentDecoder(nn.Module):
         pos_a = data['agent']['token_pos'].clone()
         head_a = data['agent']['token_heading'].clone()
         num_agent, num_step, traj_dim = pos_a.shape
-        pos_a[:, (self.num_historical_steps - 1) // self.shift:] = 0
+        pos_a[:, (self.num_historical_steps - 1) // self.shift:] = 0 # Set the pos_a of all timesteps after 2nd = 0. This 
         head_a[:, (self.num_historical_steps - 1) // self.shift:] = 0
         head_vector_a = torch.stack([head_a.cos(), head_a.sin()], dim=-1)
 

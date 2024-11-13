@@ -7,7 +7,7 @@ time_info: &time_info
 
 Dataset:
   root:
-  train_batch_size: 8
+  train_batch_size: 1
   val_batch_size: 1
   test_batch_size: 1
   shuffle: True
@@ -32,11 +32,11 @@ Trainer:
   save_ckpt_path: null
   num_nodes: 1
   mode:
-  ckpt_path: "/home/k.lotfy/SMART/logs/waymo_mini_baseline/checkpoints/epoch=31.ckpt"
+  ckpt_path: 
   precision: 32
   accumulate_grad_batches: 1
   # control training
-  overfit_batches: 0
+  overfit_batches: 1
   limit_val_batches: 2
 
 
