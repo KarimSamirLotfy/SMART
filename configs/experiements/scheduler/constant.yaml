@@ -61,7 +61,7 @@ Model:
   # Diffusion
   use_diffusion: True
   num_diffusion_steps: 10
-  schedule_name: exponential # cosine, linear, exponential, constant
+  schedule_name: constant # cosine, linear, exponential, constant
   decoder:
     <<: *time_info
     num_map_layers: 3

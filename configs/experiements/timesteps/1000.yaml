@@ -7,7 +7,7 @@ time_info: &time_info
 
 Dataset:
   root:
-  train_batch_size: 10
+  train_batch_size: 8
   val_batch_size: 1
   test_batch_size: 1
   shuffle: True
@@ -60,8 +60,8 @@ Model:
   total_steps: 32
   # Diffusion
   use_diffusion: True
-  num_diffusion_steps: 10
-  schedule_name: exponential # cosine, linear, exponential, constant
+  num_diffusion_steps: 1000
+  schedule_name: cosine # cosine, linear, exponential, constant
   decoder:
     <<: *time_info
     num_map_layers: 3
