@@ -8,6 +8,7 @@ import numpy as np
 from torch_geometric.data import HeteroData
 from smart.modules.agent_decoder import SMARTAgentDecoder
 from smart.modules.diff_agent_decoder import DiffSMARTAgentDecoder
+from smart.modules.discrete_diffusion import UnifiedDiscreteDiffusion
 from smart.modules.map_decoder import SMARTMapDecoder
 from diffusers import DDPMScheduler
 ### UTILS DIFFUSION ###
@@ -183,54 +184,6 @@ class SMARTDiffusion(nn.Module):
         self.loss_type = loss_type
         self.num_diffusion_timesteps = num_diffusion_timesteps
 
-        if betas is None:
-            betas = get_named_beta_schedule(schedule_name, num_diffusion_timesteps)
-        # Use float64 for accuracy.
-        betas = np.array(betas, dtype=np.float64)
-        self.betas = betas
-        assert len(betas.shape) == 1, "betas must be 1-D"
-        assert (betas > 0).all() and (betas <= 1).all()
-
-        alphas = 1.0 - betas
-        self.alphas_cumprod = np.cumprod(alphas, axis=0)
-        self.alphas_cumprod_prev = np.append(1.0, self.alphas_cumprod[:-1])
-        self.alphas_cumprod_next = np.append(self.alphas_cumprod[1:], 0.0)
-        assert self.alphas_cumprod_prev.shape == (self.num_diffusion_timesteps,)
-
-        # calculations for diffusion q(x_t | x_{t-1}) and others
-        self.sqrt_alphas_cumprod = np.sqrt(self.alphas_cumprod)
-        self.sqrt_one_minus_alphas_cumprod = np.sqrt(1.0 - self.alphas_cumprod)
-        self.log_one_minus_alphas_cumprod = np.log(1.0 - self.alphas_cumprod)
-        self.sqrt_recip_alphas_cumprod = np.sqrt(1.0 / self.alphas_cumprod)
-        self.sqrt_recipm1_alphas_cumprod = np.sqrt(1.0 / self.alphas_cumprod - 1)
-
-        # calculations for posterior q(x_{t-1} | x_t, x_0)
-        self.posterior_variance = (
-            betas * (1.0 - self.alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
-        )
-        # log calculation clipped because the posterior variance is 0 at the
-        # beginning of the diffusion chain.
-        self.posterior_log_variance_clipped = np.log(
-            np.append(self.posterior_variance[1], self.posterior_variance[1:])
-        )
-        self.posterior_mean_coef1 = (
-            betas * np.sqrt(self.alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
-        )
-        self.posterior_mean_coef2 = (
-            (1.0 - self.alphas_cumprod_prev)
-            * np.sqrt(alphas)
-            / (1.0 - self.alphas_cumprod)
-        )
-        #endregion
-
-        self.scheduler = DDPMScheduler(
-            num_train_timesteps=num_diffusion_timesteps,
-            beta_start=0.0001,
-            beta_end=0.01,
-            beta_schedule="linear",
-            clip_sample=False,
-            prediction_type="epsilon",
-        )
         #region SMART Diffusion Based Decoder
         self.map_encoder = SMARTMapDecoder(
             dataset=dataset,
@@ -266,6 +219,11 @@ class SMARTDiffusion(nn.Module):
         self.embedding_normalizer = torch.nn.LayerNorm(hidden_dim, elementwise_affine=False)
         self.linear = nn.Linear(hidden_dim, token_size, bias=True)
 
+        self.diffusion = UnifiedDiscreteDiffusion(self.num_diffusion_timesteps, # 0 means use continuous time
+                                     num_classes=token_size, 
+                                     noise_schedule_type=schedule_name,
+                                     noise_schedule_args={},
+                                     )
         #endregion
     ### TRAINING ###
     def q_sample(self, x_start, t, noise):        
@@ -285,29 +243,59 @@ class SMARTDiffusion(nn.Module):
         batch_size = data['agent']['batch'].max().item() + 1
         device = data['agent']['batch'].device
         agent_batch_association = data['agent']['batch']
-        # set the scheduler
-        num_train_timesteps = self.scheduler.config.num_train_timesteps
-        self.scheduler.set_timesteps(num_train_timesteps, device=device)
-        timesteps = torch.randint(0, self.num_diffusion_timesteps, (batch_size,), device=device).long()
         # Map encodings
         map_enc = self.map_encoder(data)
-        # Token encodings
-        agent_token_index = data['agent']['token_idx'] 
-        x0 = self.vocab_embedding(agent_token_index)
-        # normalize with L2 to avoid exploding params
-        x0_norm = torch.nn.functional.normalize(x0, p=2, dim=-1)
-        # add noise to normalized embedding
-        noise = torch.randn_like(x0_norm)
+
+
+        timesteps = torch.randint(1, self.num_diffusion_timesteps, (batch_size,), device=device).long()
+        # add noise 
         timesteps_per_agent = timesteps[agent_batch_association]
-        x = self.scheduler.add_noise(x0_norm, noise, timesteps_per_agent)
-        data['features'] = x
-        agent_enc = self.agent_encoder(data, map_enc, timesteps)        
-        return {**map_enc, **agent_enc}
+        x_0 = data['agent']['token_idx']
+        x_t = self.diffusion.qt_0_sample(x_0, timesteps_per_agent)
+        agent_enc = self.agent_encoder(data, map_enc, x_noisy=x_t, timesteps=timesteps)        
+        return {
+            **map_enc, 
+            **agent_enc,
+            'logits_t': agent_enc['token_prob'],
+            'x_t': x_t,
+            'x_0': x_0,
+            't': timesteps_per_agent,
+            'conditional_mask': agent_enc['token_eval_mask']
+            }
 
     def inference(self, data: HeteroData) -> Dict[str, torch.Tensor]:
         map_enc = self.map_encoder(data)
-        agent_enc = self.agent_encoder.inference(data, map_enc)
-        return {**map_enc, **agent_enc}
+
+        # model_input 
+        agent_token_index = data['agent']['token_idx'].clone()
+        agent_token_mask_conditioned = torch.full_like(agent_token_index, True, dtype=torch.bool)
+        agent_token_mask_conditioned[:, 2:] = False # first 2 tokens are kept
+        agent_token_index[~agent_token_mask_conditioned] = 0 # I am removing all the tokens in the future. as the model has to predict them 
+        m_noise_distribution = torch.full((*agent_token_index.shape , self.agent_encoder.token_size), 1.0, device=agent_token_index.device, dtype=torch.float)
+
+        class DenoisingModule(nn.Module):
+            def __init__(self, agent_encoder):
+                super(DenoisingModule, self).__init__()
+                self.agent_encoder = agent_encoder
+
+            def forward(self, x_t, timesteps):
+                output = self.agent_encoder(data, map_enc, x_noisy=x_t, timesteps=timesteps)
+                logits = output['token_prob']
+                return logits
+        # wraper for the denoising function
+        denoiser = DenoisingModule(self.agent_encoder)
+
+        x_t = self.diffusion.sample(denoiser,
+            num_backward_steps=self.num_diffusion_timesteps,
+            m = m_noise_distribution,
+            conditional_mask=agent_token_mask_conditioned,
+            conditional_input=agent_token_index
+        )
+
+        info_dict = self.agent_encoder.inference(data, map_enc, generated_token_idx=x_t)
+        # Go from tokens entire path tokens to the actull information
+        
+        return {**map_enc, **info_dict, 'x_t': x_t}
         
 
 class SMARTDecoder(nn.Module):

@@ -9,6 +9,7 @@ from smart.metrics import minADE
 from smart.metrics import minFDE
 from smart.metrics import TokenCls
 from smart.modules import SMARTDecoder
+from smart.modules import SMARTDiffusion
 from torch.optim.lr_scheduler import LambdaLR
 import math
 import numpy as np
@@ -79,36 +80,77 @@ class SMART(pl.LightningModule):
         self.init_map_token()
         self.token_path = os.path.join(module_dir, 'tokens/cluster_frame_5_2048.pkl')
         token_data = self.get_trajectory_token()
-        self.encoder = SMARTDecoder(
-            dataset=model_config.dataset,
-            input_dim=model_config.input_dim,
-            hidden_dim=model_config.hidden_dim,
-            num_historical_steps=model_config.num_historical_steps,
-            num_freq_bands=model_config.num_freq_bands,
-            num_heads=model_config.num_heads,
-            head_dim=model_config.head_dim,
-            dropout=model_config.dropout,
-            num_map_layers=model_config.decoder.num_map_layers,
-            num_agent_layers=model_config.decoder.num_agent_layers,
-            pl2pl_radius=model_config.decoder.pl2pl_radius,
-            pl2a_radius=model_config.decoder.pl2a_radius,
-            a2a_radius=model_config.decoder.a2a_radius,
-            time_span=model_config.decoder.time_span,
-            map_token={'traj_src': self.map_token['traj_src']},
-            token_data=token_data,
-            token_size=model_config.decoder.token_size
-        )
+
+        # MEtrics
         self.minADE = minADE(max_guesses=1)
         self.minFDE = minFDE(max_guesses=1)
         self.TokenCls = TokenCls(max_guesses=1)
         self.waymo_metrics = WaymoMetrics()
         
         self.test_predictions = dict()
+        # Loss Functions
         self.cls_loss = nn.CrossEntropyLoss(label_smoothing=0.1)
         self.map_cls_loss = nn.CrossEntropyLoss(label_smoothing=0.1)
+        self.diffusion = model_config.use_diffusion
+        if self.diffusion:
+            self.encoder = SMARTDiffusion(
+                dataset=model_config.dataset,
+                input_dim=model_config.input_dim,
+                hidden_dim=model_config.hidden_dim,
+                num_historical_steps=model_config.num_historical_steps,
+                num_freq_bands=model_config.num_freq_bands,
+                num_heads=model_config.num_heads,
+                head_dim=model_config.head_dim,
+                dropout=model_config.dropout,
+                num_map_layers=model_config.decoder.num_map_layers,
+                num_agent_layers=model_config.decoder.num_agent_layers,
+                pl2pl_radius=model_config.decoder.pl2pl_radius,
+                pl2a_radius=model_config.decoder.pl2a_radius,
+                a2a_radius=model_config.decoder.a2a_radius,
+                time_span=model_config.decoder.time_span,
+                map_token={'traj_src': self.map_token['traj_src']},
+                token_data=token_data,
+                token_size=model_config.decoder.token_size,
+                num_diffusion_timesteps=model_config.num_diffusion_steps,
+                schedule_name=model_config.schedule_name,
+            )
+            # Training Task: End2End State Prediction
+            self.model_output_prob = 'token_prob_softmax'
+            self.model_output_gt_indx = 'token_idx_gt'
+            self.model_output_eval_mask = 'token_eval_mask'
+            self.model_output_index = 'token_idx'
+
+            # Losses
+            self.diff_loss = self.encoder.diffusion.compute_loss
+        else:
+            self.encoder = SMARTDecoder(
+                dataset=model_config.dataset,
+                input_dim=model_config.input_dim,
+                hidden_dim=model_config.hidden_dim,
+                num_historical_steps=model_config.num_historical_steps,
+                num_freq_bands=model_config.num_freq_bands,
+                num_heads=model_config.num_heads,
+                head_dim=model_config.head_dim,
+                dropout=model_config.dropout,
+                num_map_layers=model_config.decoder.num_map_layers,
+                num_agent_layers=model_config.decoder.num_agent_layers,
+                pl2pl_radius=model_config.decoder.pl2pl_radius,
+                pl2a_radius=model_config.decoder.pl2a_radius,
+                a2a_radius=model_config.decoder.a2a_radius,
+                time_span=model_config.decoder.time_span,
+                map_token={'traj_src': self.map_token['traj_src']},
+                token_data=token_data,
+                token_size=model_config.decoder.token_size
+            )
+            # Training Task: Next Token Prediction
+            self.model_output_prob = 'next_token_prob'
+            self.model_output_gt_indx = 'next_token_idx_gt'
+            self.model_output_eval_mask = 'next_token_eval_mask'
+            self.model_output_index = 'next_token_idx'
+
         self.inference_token = True
         self.visualize = True
-        self.metrics = False
+        self.metrics = True
         self.visualize_directory = 'visualize'
         self.rollout_num = submission_specs.N_ROLLOUTS
 
@@ -154,13 +196,27 @@ class SMART(pl.LightningModule):
         if isinstance(data, Batch):
             data['agent']['av_index'] += data['agent']['ptr'][:-1]
         pred = self(data)
-        next_token_prob = pred['next_token_prob']
-        next_token_idx_gt = pred['next_token_idx_gt']
-        next_token_eval_mask = pred['next_token_eval_mask']
-        cls_loss = self.cls_loss(next_token_prob[next_token_eval_mask], next_token_idx_gt[next_token_eval_mask])
-        loss = cls_loss
+        next_token_prob = pred[self.model_output_prob]
+        next_token_idx_gt = pred[self.model_output_gt_indx]
+        next_token_eval_mask = pred[self.model_output_eval_mask]
+        if self.diffusion:
+            diff_loss = self.diff_loss(
+                logits_t=pred['logits_t'],
+                x_t=pred['x_t'],
+                x_0=pred['x_0'],
+                t=pred['t'],
+                m=None,
+            )
+            loss = diff_loss['loss']
+            # self.log('ce_loss', diff_loss['ce_loss'])
+            # self.log('vb_loss', diff_loss['vb_loss'])
+
+        else:
+            cls_loss = self.cls_loss(next_token_prob[next_token_eval_mask], next_token_idx_gt[next_token_eval_mask])
+            loss = cls_loss
+            self.log('cls_loss', cls_loss, prog_bar=True, on_step=True, on_epoch=True, batch_size=1)
+
         self.log('train_loss', loss, prog_bar=True, on_step=True, on_epoch=True, batch_size=1)
-        self.log('cls_loss', cls_loss, prog_bar=True, on_step=True, on_epoch=True, batch_size=1)
         return loss
 
     def validation_step(self,
@@ -171,10 +227,10 @@ class SMART(pl.LightningModule):
         if isinstance(data, Batch):
             data['agent']['av_index'] += data['agent']['ptr'][:-1]
         pred = self(data)
-        next_token_idx = pred['next_token_idx']
-        next_token_idx_gt = pred['next_token_idx_gt']
-        next_token_eval_mask = pred['next_token_eval_mask']
-        next_token_prob = pred['next_token_prob']
+        next_token_idx = pred[self.model_output_index]
+        next_token_idx_gt = pred[self.model_output_gt_indx]
+        next_token_eval_mask = pred[self.model_output_eval_mask]
+        next_token_prob = pred[self.model_output_prob]
         cls_loss = self.cls_loss(next_token_prob[next_token_eval_mask], next_token_idx_gt[next_token_eval_mask])
         loss = cls_loss
         self.TokenCls.update(pred=next_token_idx[next_token_eval_mask], target=next_token_idx_gt[next_token_eval_mask],
@@ -347,7 +403,7 @@ class SMART(pl.LightningModule):
 
         logger.info('==> Loading parameters from checkpoint %s to %s' % (filename, 'CPU' if to_cpu else 'GPU'))
         loc_type = torch.device('cpu') if to_cpu else None
-        checkpoint = torch.load(filename, map_location=loc_type)
+        checkpoint = torch.load(filename, map_location=loc_type, weights_only=False)
         model_state_disk = checkpoint['state_dict']
 
         version = checkpoint.get("version", None)

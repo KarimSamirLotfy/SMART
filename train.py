@@ -57,8 +57,9 @@ if __name__ == '__main__':
                          num_sanity_val_steps=0,
                          gradient_clip_val=0.5,
                          overfit_batches=trainer_config.overfit_batches,
-                         limit_val_batches=trainer_config.limit_val_batches,)
-    if args.ckpt_path == "" and config.Trainer['ckpt_path'] == "":
+                         limit_val_batches=trainer_config.limit_val_batches,
+                         val_check_interval=trainer_config.val_check_interval)
+    if args.ckpt_path == "" and config.Trainer['ckpt_path'] == None:
         trainer.fit(model,
                     datamodule)
     else:

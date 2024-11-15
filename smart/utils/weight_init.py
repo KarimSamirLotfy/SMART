@@ -20,8 +20,9 @@ def weight_init(m: nn.Module) -> None:
         nn.init.ones_(m.weight)
         nn.init.zeros_(m.bias)
     elif isinstance(m, nn.LayerNorm):
-        nn.init.ones_(m.weight)
-        nn.init.zeros_(m.bias)
+        if m.elementwise_affine:
+            nn.init.ones_(m.weight)
+            nn.init.zeros_(m.bias)
     elif isinstance(m, nn.MultiheadAttention):
         if m.in_proj_weight is not None:
             fan_in = m.embed_dim
