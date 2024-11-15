@@ -51,7 +51,7 @@ class WaymoMetrics(torchmetrics.Metric):
             metric = getattr(self, name)
             # Log the computed average to TensorBoard
             avg_value = metric.compute()
-            writer.add_scalar(f'metrics/average_{name}', avg_value, step)
+            writer.add_scalar(f'metrics/{name}', avg_value, step)
 
 
     def reset(self):
