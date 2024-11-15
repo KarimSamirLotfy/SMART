@@ -1,4 +1,5 @@
 # source https://github.com/LingxiaoShawn/USD3/tree/main
+# "Improving and Unifying Discrete\&Continuous-time Discrete Denoising Diffusion" paper
 import torch
 import torch.nn.functional as F
 import math
